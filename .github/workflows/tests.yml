@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (build + editable — validates packaging, zero runtime deps)
+        run: pip install -e .
+      - name: Import check
+        run: python -c "from groundwire import Groundwire; print('import OK', Groundwire.__name__)"
+      - name: Run tests (network-free)
+        run: python -m unittest discover -v tests
