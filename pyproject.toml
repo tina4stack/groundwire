@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tina4-groundwire"
+version = "0.1.0"
+description = "Groundwire: a retrieval + verification layer that grounds an LLM in your own source. Off-GPU corpus, only the top-k reaches the model. Ships a long-context NIAH recall harness."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Andre van Zuydam", email = "andrevanzuydam@gmail.com" }]
+keywords = [
+    "retrieval", "rag", "grounding", "context", "verification",
+    "long-context", "needle-in-a-haystack", "llm", "bm25", "tina4",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Intended Audience :: Developers",
+]
+dependencies = []
+
+# Core carries ZERO runtime deps — same ethos as tina4-python. The dense backend
+# needs no numpy (vector math is pure stdlib, groundwire/veclite.py) and the
+# encoder is our own stdlib HTTP client (Ollama / vLLM), not sentence-transformers.
+[project.optional-dependencies]
+qwen = ["transformers", "torch", "accelerate"]  # optional local reader only
+mcp = ["tina4-python"]                           # experimental MCP server (built on Tina4)
+docs = ["pypdf"]                                 # index PDFs in the drop folder (.docx is stdlib)
+app = ["pystray", "pillow", "pypdf"]             # experimental desktop tray + drop-folder ingest
+
+[project.urls]
+Homepage = "https://github.com/tina4stack/groundwire"
+Repository = "https://github.com/tina4stack/groundwire"
+Issues = "https://github.com/tina4stack/groundwire/issues"
+
+[project.scripts]
+groundwire-bench = "groundwire.harness:main"             # long-context NIAH recall harness
+groundwire-server = "groundwire.server:main"             # experimental OpenAI-compat proxy
+groundwire-mcp = "groundwire.mcp_server:main"            # experimental Tina4-stack MCP server
+groundwire-proxy = "groundwire.proxy:main"               # experimental drop-in Ollama proxy
+
+[tool.setuptools]
+packages = ["groundwire"]
+
+[tool.setuptools.package-data]
+groundwire = ["assets/*.png", "assets/*.ico"]

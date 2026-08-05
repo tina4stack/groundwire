@@ -1,0 +1,33 @@
+// Tina4 programmer-reference accuracy dataset. 30 questions, 5 per target.
+// gold tokens + anchors are VERIFIED verbatim against the framework source.
+// keys: id, scope, question, gold[](any-of, folded match), anchor(retrieval probe)
+{"id": "py-1", "scope": "tina4-python", "question": "How do I define a GET route that returns JSON?", "gold": ["@get", "async def", "response.json"], "anchor": "Register a GET route"}
+{"id": "py-2", "scope": "tina4-python", "question": "How do I define an ORM model for a database table?", "gold": ["class ORM", "IntegerField", "StringField"], "anchor": "SQL-first Active Record"}
+{"id": "py-3", "scope": "tina4-python", "question": "How do I start the development server?", "gold": ["run()", "Discovers routes from src"], "anchor": "Start the Tina4 dev server"}
+{"id": "py-4", "scope": "tina4-python", "question": "How do I auto-render a template with context data?", "gold": ["@template", "response.render", "Frond"], "anchor": "Auto-render a dict return value"}
+{"id": "py-5", "scope": "tina4-python", "question": "How do I read a URL path parameter from the request?", "gold": ["request.param", "_route_params"], "anchor": "Get a route parameter"}
+{"id": "php-1", "scope": "tina4-php", "question": "How do I register a GET endpoint that handles HTTP requests?", "gold": ["Router::get", "callable $callback"], "anchor": "public static function get(string $path, callable"}
+{"id": "php-2", "scope": "tina4-php", "question": "How do I define a database model and save records?", "gold": ["abstract class ORM", "function save"], "anchor": "abstract class ORM"}
+{"id": "php-3", "scope": "tina4-php", "question": "How do I start the built-in development server?", "gold": ["Server", "function start"], "anchor": "public function start(): void"}
+{"id": "php-4", "scope": "tina4-php", "question": "How do I render an HTML template with dynamic variables?", "gold": ["Frond", "function render"], "anchor": "public function render(string $template, array $data"}
+{"id": "php-5", "scope": "tina4-php", "question": "How do I create a JWT authentication token for a user?", "gold": ["createToken", "string $secret"], "anchor": "public static function createToken(array $payload, string $secret"}
+{"id": "rb-1", "scope": "tina4-ruby", "question": "How do I define a GET route that returns JSON?", "gold": ["Tina4.get", "response.json"], "anchor": "def get(path, auth"}
+{"id": "rb-2", "scope": "tina4-ruby", "question": "How do I define an ORM model with fields?", "gold": ["ORM", "integer_field", "string_field"], "anchor": "class ORM"}
+{"id": "rb-3", "scope": "tina4-ruby", "question": "How do I start the server?", "gold": ["WebServer", "Tina4.initialize"], "anchor": "def start"}
+{"id": "rb-4", "scope": "tina4-ruby", "question": "How do I render a template?", "gold": ["Template.render", "TwigEngine"], "anchor": "def render(template_path, data"}
+{"id": "rb-5", "scope": "tina4-ruby", "question": "How do I access request parameters?", "gold": ["request.params", "request.query"], "anchor": "def params"}
+{"id": "node-1", "scope": "tina4-nodejs", "question": "How do I start an HTTP server and listen for requests?", "gold": ["startServer", "Tina4Config"], "anchor": "export async function startServer(config"}
+{"id": "node-2", "scope": "tina4-nodejs", "question": "How do I define and register HTTP route handlers?", "gold": ["Router", "addRoute", "RouteHandler"], "anchor": "export class Router {"}
+{"id": "node-3", "scope": "tina4-nodejs", "question": "How do I create an ORM model and query a database table?", "gold": ["BaseModel", "findById", "findAll"], "anchor": "export class BaseModel {"}
+{"id": "node-4", "scope": "tina4-nodejs", "question": "How do I render Twig templates with variables?", "gold": ["Frond", "renderString"], "anchor": "export class Frond {"}
+{"id": "node-5", "scope": "tina4-nodejs", "question": "How do I read request parameters and query strings?", "gold": ["Tina4Request", "params", "query"], "anchor": "tReq.query = query"}
+{"id": "js-1", "scope": "tina4-js", "question": "How do I create a reactive value that notifies components when it changes?", "gold": ["signal"], "anchor": "Create a reactive signal"}
+{"id": "js-2", "scope": "tina4-js", "question": "How do I build a reusable web component with reactive props and lifecycle hooks?", "gold": ["Tina4Element"], "anchor": "Base class for web components"}
+{"id": "js-3", "scope": "tina4-js", "question": "How do I create DOM content with reactive updates using template literals?", "gold": ["html"], "anchor": "Tagged template literal renderer"}
+{"id": "js-4", "scope": "tina4-js", "question": "How do I make a signal survive a page refresh by persisting it to storage?", "gold": ["persist"], "anchor": "value is read from storage"}
+{"id": "js-5", "scope": "tina4-js", "question": "How do I communicate with a backend using HTTP methods with automatic authentication?", "gold": ["api"], "anchor": "HTTP client pre-configured"}
+{"id": "delphi-1", "scope": "tina4delphi", "question": "How do I parse and render a Twig-compatible template with variables?", "gold": ["TTina4Frond", "Render"], "anchor": "Twig-compatible template engine"}
+{"id": "delphi-2", "scope": "tina4delphi", "question": "How do I make HTTP GET, POST, and PATCH requests with authentication?", "gold": ["TTina4REST", "Post", "Patch"], "anchor": "Sends an HTTP GET request"}
+{"id": "delphi-3", "scope": "tina4delphi", "question": "How do I start a WebSocket server that accepts client connections?", "gold": ["TTina4WebSocketServer", "Listen"], "anchor": "WebSocket server"}
+{"id": "delphi-4", "scope": "tina4delphi", "question": "How do I define an HTML DOM node and parse HTML markup?", "gold": ["THTMLTag", "THTMLParser"], "anchor": "parsed HTML DOM tree"}
+{"id": "delphi-5", "scope": "tina4delphi", "question": "How do I create a route that handles HTTP requests to a specific endpoint?", "gold": ["TTina4Route", "OnExecute", "EndPoint"], "anchor": "property OnExecute"}
