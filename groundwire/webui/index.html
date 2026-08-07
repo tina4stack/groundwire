@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>groundwire</title>
+<script src="/static/tina4js.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f1e8; --panel:#fffdf8; --ink:#26211d; --muted:#8a8178;
+    --line:#e6ded0; --rust:#c15831; --rust-ink:#fff; --accent:#40e0d0;
+    --code:#2b2521; --code-ink:#f0e9df;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#1c1a18;--panel:#252220;--ink:#ece5da;--muted:#9a9186;
+      --line:#39332d;--rust:#c96a41;--code:#141210;--code-ink:#e8e0d5;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg);color:var(--ink);height:100vh;overflow:hidden}
+  #app{display:grid;grid-template-columns:230px 1fr;height:100vh}
+  .side{background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:hidden}
+  .brand{display:flex;align-items:center;gap:8px;padding:14px 16px;
+    font-weight:700;border-bottom:1px solid var(--line)}
+  .brand img{width:22px;height:22px}
+  .newbtn{margin:10px;padding:9px;border:1px solid var(--line);border-radius:8px;
+    background:transparent;color:var(--ink);cursor:pointer;font-weight:600}
+  .newbtn:hover{border-color:var(--rust)}
+  .convs{flex:1;overflow-y:auto;padding:4px}
+  .conv{padding:8px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+  .conv:hover{background:var(--bg)}
+  .conv.on{background:var(--bg);color:var(--ink);font-weight:600}
+  .main{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  .top{display:flex;align-items:center;gap:10px;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  .top select{padding:6px 8px;border:1px solid var(--line);border-radius:7px;
+    background:var(--bg);color:var(--ink)}
+  .grow{flex:1}
+  .pill{padding:5px 10px;border:1px solid var(--line);border-radius:20px;
+    background:transparent;color:var(--muted);cursor:pointer;font-size:12px}
+  .pill.on{background:var(--rust);color:var(--rust-ink);border-color:var(--rust)}
+  .body{flex:1;display:grid;grid-template-columns:1fr;overflow:hidden}
+  .body.dbg{grid-template-columns:1fr 380px}
+  .chat{overflow-y:auto;padding:20px 8%;display:flex;flex-direction:column;gap:14px}
+  .msg{max-width:80ch}
+  .msg .who{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--muted);margin-bottom:3px}
+  .msg .txt{white-space:pre-wrap;word-wrap:break-word}
+  .msg.user .txt{background:var(--panel);border:1px solid var(--line);
+    padding:10px 12px;border-radius:10px}
+  .foot{color:var(--muted);font-size:12px;border-top:1px dashed var(--line);
+    margin-top:6px;padding-top:4px}
+  .composer{border-top:1px solid var(--line);padding:12px 8%;background:var(--panel)}
+  .composer form{display:flex;gap:8px;align-items:flex-end}
+  textarea{flex:1;resize:none;min-height:44px;max-height:180px;padding:10px 12px;
+    border:1px solid var(--line);border-radius:10px;background:var(--bg);
+    color:var(--ink);font:inherit}
+  .send{padding:10px 16px;border:none;border-radius:10px;background:var(--rust);
+    color:var(--rust-ink);font-weight:700;cursor:pointer}
+  .send:disabled{opacity:.5;cursor:default}
+  .panel{border-left:1px solid var(--line);background:var(--panel);
+    overflow-y:auto;padding:14px}
+  .panel h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--muted)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:12px;
+    font-weight:700;background:var(--rust);color:var(--rust-ink)}
+  .srcrow{font-size:12px;color:var(--muted);padding:2px 0}
+  pre.ctx{background:var(--code);color:var(--code-ink);padding:10px;
+    border-radius:8px;white-space:pre-wrap;word-wrap:break-word;font-size:12px;
+    max-height:40vh;overflow:auto}
+  .sec{margin-top:18px}
+  .path{display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0;
+    border-bottom:1px solid var(--line)}
+  .path .p{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lo{font-size:10px;padding:1px 5px;border-radius:5px;background:var(--line);color:var(--ink)}
+  .x{cursor:pointer;color:var(--muted)} .x:hover{color:var(--rust)}
+  input[type=text]{width:100%;padding:7px 9px;border:1px solid var(--line);
+    border-radius:7px;background:var(--bg);color:var(--ink);font:inherit}
+  label.chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:6px 0}
+  .addbtn{width:100%;padding:7px;border:1px solid var(--rust);border-radius:7px;
+    background:transparent;color:var(--rust);cursor:pointer;font-weight:600;margin-top:6px}
+  .copy{font-size:11px;cursor:pointer;color:var(--rust);float:right}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const { signal, computed, html } = Tina4;
+
+// -- state ------------------------------------------------------------------
+const models = signal([]);            const model = signal(null);
+const conversations = signal([]);     const convId = signal(null);
+const messages = signal([]);          // committed [{role,content,sources?}]
+const streamText = signal("");        const streaming = signal(false);
+const input = signal("");
+const sources = signal([]);           // sanctioned paths
+const debug = signal(null);           // {mode, context, sources}
+const showPanel = signal(true);
+const newPath = signal("");           const newLocal = signal(false);
+
+// -- api --------------------------------------------------------------------
+const J = (r) => r.json();
+async function post(url, b){ return fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(J); }
+async function loadModels(){ const d = await fetch("/api/models").then(J); models.value = d.models; if(!model.value) model.value = d.default; }
+async function loadConvs(){ conversations.value = await fetch("/api/conversations").then(J); }
+async function loadSources(){ sources.value = await fetch("/api/sources").then(J); }
+async function openConv(id){ const c = await fetch("/api/conversations/"+id).then(J); convId.value=id; messages.value = c.messages || []; }
+function newChat(){ convId.value=null; messages.value=[]; streamText.value=""; debug.value=null; }
+
+async function addSource(){
+  if(!newPath.value.trim()) return;
+  sources.value = await post("/api/sources", {path:newPath.value.trim(), local_only:newLocal.value});
+  newPath.value=""; newLocal.value=false;
+}
+async function toggleSource(id, enabled){ sources.value = await post("/api/sources/toggle", {id, enabled}); }
+async function removeSource(id){ sources.value = await post("/api/sources/remove", {id}); }
+
+// -- send a turn (inspect first, then stream) -------------------------------
+async function send(){
+  const text = input.value.trim();
+  if(!text || streaming.value) return;
+  input.value = "";
+  messages.value = [...messages.value, {role:"user", content:text}];
+  streaming.value = true; streamText.value = "";
+  // DEBUG: what will be injected (accuracy audit) — before the model answers
+  debug.value = await post("/api/inspect", {message:text, backend:model.value});
+  const payload = {conv_id: convId.value, message:text, backend:model.value};
+  try{
+    const resp = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf="";
+    for(;;){
+      const {done, value} = await reader.read(); if(done) break;
+      buf += dec.decode(value,{stream:true}); let i;
+      while((i = buf.indexOf("\n\n")) >= 0){
+        const raw = buf.slice(0,i); buf = buf.slice(i+2);
+        let ev="message", data="";
+        for(const line of raw.split("\n")){
+          if(line.startsWith("event:")) ev=line.slice(6).trim();
+          else if(line.startsWith("data:")) data=line.slice(5).trim();
+        }
+        if(!data) continue; const obj = JSON.parse(data);
+        if(ev==="meta") convId.value = obj.conv_id;
+        else if(ev==="delta") streamText.value += obj.text;
+        else if(ev==="error") streamText.value += "\n[error: "+obj.message+"]";
+      }
+    }
+  }catch(e){ streamText.value += "\n[connection error: "+e.message+"]"; }
+  messages.value = [...messages.value, {role:"assistant", content:streamText.value}];
+  streamText.value=""; streaming.value=false;
+  loadConvs();
+}
+
+function copyBug(){
+  const d = debug.value || {};
+  const report = ["## groundwire bug report",
+    "model: "+model.value, "mode: "+(d.mode||"—"),
+    "sources: "+JSON.stringify(d.sources||[]),
+    "--- injected context ---", d.context||"(none)",
+    "--- transcript ---",
+    ...messages.value.map(m=>m.role.toUpperCase()+": "+m.content)].join("\n");
+  navigator.clipboard.writeText(report);
+}
+
+// -- render -----------------------------------------------------------------
+const app = html`
+<div class="side">
+  <div class="brand"><img src="/static/groundwire-64.png" alt=""> groundwire</div>
+  <button class="newbtn" @click=${newChat}>+ New chat</button>
+  <div class="convs">${() => conversations.value.map(c => html`
+    <div class=${() => "conv" + (c.id===convId.value ? " on" : "")}
+         @click=${() => openConv(c.id)}>${c.title || "Untitled"}</div>`)}</div>
+</div>
+
+<div class="main">
+  <div class="top">
+    <select @change=${(e)=>{ model.value = e.target.value; }}>
+      ${() => models.value.map(m => html`
+        <option value=${m} ?selected=${() => m===model.value}>${m}</option>`)}
+    </select>
+    <span class="grow"></span>
+    <button class=${() => "pill" + (showPanel.value ? " on" : "")}
+            @click=${() => showPanel.value = !showPanel.value}>🔍 Debug</button>
+  </div>
+
+  <div class=${() => "body" + (showPanel.value ? " dbg" : "")}>
+    <div class="chat">
+      ${() => messages.value.map(m => html`
+        <div class=${"msg "+m.role}>
+          <div class="who">${m.role}</div>
+          <div class="txt">${m.content}</div>
+        </div>`)}
+      ${() => streaming.value ? html`
+        <div class="msg assistant"><div class="who">assistant</div>
+          <div class="txt">${streamText}${() => streamText.value ? "" : "…"}</div></div>` : null}
+    </div>
+
+    <div class="panel" ?hidden=${() => !showPanel.value}>
+      <h3>Debug <span class="copy" @click=${copyBug}>copy bug report</span></h3>
+      ${() => debug.value ? html`
+        <p>route: <span class="tag">${debug.value.mode}</span></p>
+        <h3 class="sec">Sources injected</h3>
+        ${() => (debug.value.sources||[]).map(s => html`
+          <div class="srcrow">${s.source} <b>${String(s.ref)}</b></div>`)}
+        <h3 class="sec">Injected context (verbatim)</h3>
+        <pre class="ctx">${() => debug.value.context || "(nothing injected)"}</pre>
+      ` : html`<p style="color:var(--muted)">Send a message to see exactly what
+        context groundwire injects — before the model answers.</p>`}
+
+      <h3 class="sec">Memory sources</h3>
+      ${() => sources.value.map(s => html`
+        <div class="path">
+          <input type="checkbox" ?checked=${s.enabled}
+                 @change=${(e)=>toggleSource(s.id, e.target.checked)}>
+          <span class="p" title=${s.path}>${s.scope}</span>
+          ${() => s.local_only ? html`<span class="lo">local-only</span>` : null}
+          <span class="x" @click=${()=>removeSource(s.id)}>✕</span>
+        </div>`)}
+      <div class="sec">
+        <input type="text" placeholder="/path/to/folder" .value=${newPath}
+               @input=${(e)=>{ newPath.value=e.target.value; }}>
+        <label class="chk"><input type="checkbox" ?checked=${newLocal}
+          @change=${(e)=>{ newLocal.value=e.target.checked; }}> local-only (hide from cloud models)</label>
+        <button class="addbtn" @click=${addSource}>Add sanctioned folder</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <form @submit=${(e)=>{ e.preventDefault(); send(); }}>
+      <textarea placeholder="Ask about your files…" .value=${input}
+        @input=${(e)=>{ input.value=e.target.value; }}
+        @keydown=${(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } }}></textarea>
+      <button class="send" type="submit" ?disabled=${() => streaming.value || !input.value.trim()}>
+        ${() => streaming.value ? "…" : "Send"}</button>
+    </form>
+  </div>
+</div>`;
+
+document.getElementById("app").replaceWith(app);
+loadModels(); loadConvs(); loadSources();
+</script>
+</body>
+</html>

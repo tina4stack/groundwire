@@ -67,10 +67,10 @@ def build_backends(cfg: dict, get_key=None):
     return backends
 
 
-def make_session(cfg: dict = None, db_path: str = DB_PATH, get_key=None):
+def make_session(cfg: dict = None, db_path: str = None, get_key=None):
     """Assemble (session, store, cfg) ready for the server."""
     cfg = cfg or load_config()
-    store = Store(db_path)
+    store = Store(db_path or DB_PATH)      # read DB_PATH at call time (overridable)
     backends = build_backends(cfg, get_key)
     default = cfg.get("default_backend")
     if default not in backends:
