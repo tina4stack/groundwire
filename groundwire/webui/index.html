@@ -16,7 +16,8 @@
       --line:#39332d;--rust:#c96a41;--code:#141210;--code-ink:#e8e0d5;}
   }
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,"Segoe UI Emoji",
+    "Apple Color Emoji","Noto Color Emoji",sans-serif;
     background:var(--bg);color:var(--ink);height:100vh;overflow:hidden}
   #app{display:grid;grid-template-columns:230px 1fr;height:100vh}
   .side{background:var(--panel);border-right:1px solid var(--line);
@@ -51,7 +52,29 @@
   .msg.user .txt{background:var(--panel);border:1px solid var(--line);
     padding:10px 12px;border-radius:10px}
   .foot{color:var(--muted);font-size:12px;border-top:1px dashed var(--line);
-    margin-top:6px;padding-top:4px}
+    margin-top:8px;padding-top:5px}
+  /* rendered markdown (assistant messages) */
+  .md{white-space:normal}
+  .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
+  .md p{margin:0 0 10px}
+  .md h1,.md h2,.md h3,.md h4{margin:14px 0 6px;line-height:1.3;font-weight:700}
+  .md h1{font-size:1.4em} .md h2{font-size:1.25em}
+  .md h3{font-size:1.1em} .md h4{font-size:1em}
+  .md ul,.md ol{margin:0 0 10px;padding-left:22px}
+  .md li{margin:2px 0} .md li>ul,.md li>ol{margin:2px 0}
+  .md strong{font-weight:700} .md em{font-style:italic}
+  .md a{color:var(--rust)}
+  .md hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+  .md blockquote{margin:0 0 10px;padding:2px 0 2px 12px;
+    border-left:3px solid var(--rust);color:var(--muted)}
+  .md code{background:var(--line);padding:1px 5px;border-radius:4px;
+    font:12.5px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
+  .md pre{background:var(--code);color:var(--code-ink);padding:12px;
+    border-radius:8px;overflow:auto;margin:0 0 10px}
+  .md pre code{background:none;padding:0;color:inherit}
+  .md table{border-collapse:collapse;margin:0 0 10px;font-size:13px}
+  .md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left}
+  .md th{background:var(--panel);font-weight:700}
   .composer{border-top:1px solid var(--line);padding:12px 8%;background:var(--panel)}
   .composer form{display:flex;gap:8px;align-items:flex-end}
   textarea{flex:1;resize:none;min-height:44px;max-height:180px;padding:10px 12px;
@@ -88,6 +111,74 @@
 <div id="app"></div>
 <script>
 const { signal, computed, html } = Tina4;
+
+// -- markdown -> safe HTML (offline, no deps; escape FIRST so it's XSS-safe) --
+function esc(s){ return s.replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function mdInline(s){                       // s is already HTML-escaped
+  return s
+    .replace(/`([^`]+)`/g, (_,c)=>"<code>"+c+"</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function mdTableRow(line){ return line.trim().replace(/^\||\|$/g,"").split("|"); }
+function mdToHtml(src){ return mdBlocks(esc(src)); }
+function mdBlocks(text){                     // text is ALREADY html-escaped
+  const lines = text.split("\n");
+  let out = "", i = 0;
+  const P = /^(#{1,6}\s|&gt;\s?|\s*[-*+]\s+|\s*\d+[.)]\s+|```|\s*\|.*\|\s*$)/;
+  while(i < lines.length){
+    const line = lines[i];
+    if(/^\s*```/.test(line)){                                   // fenced code
+      const code = []; i++;
+      while(i < lines.length && !/^\s*```/.test(lines[i])){ code.push(lines[i]); i++; }
+      i++; out += "<pre><code>"+code.join("\n")+"</code></pre>"; continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);                  // heading
+    if(h){ const n=h[1].length; out += `<h${n}>`+mdInline(h[2])+`</h${n}>`; i++; continue; }
+    if(/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)){ out += "<hr>"; i++; continue; }  // rule
+    if(/^\s*\|.*\|\s*$/.test(line) && i+1 < lines.length         // table
+       && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i+1])){
+      const head = mdTableRow(line); i += 2; const rows = [];
+      while(i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])){ rows.push(mdTableRow(lines[i])); i++; }
+      out += "<table><thead><tr>"+head.map(c=>"<th>"+mdInline(c.trim())+"</th>").join("")+
+             "</tr></thead><tbody>"+rows.map(r=>"<tr>"+r.map(c=>"<td>"+mdInline(c.trim())+"</td>").join("")+"</tr>").join("")+
+             "</tbody></table>"; continue;
+    }
+    if(/^&gt;\s?/.test(line)){                                   // blockquote
+      const q = [];
+      while(i < lines.length && /^&gt;\s?/.test(lines[i])){ q.push(lines[i].replace(/^&gt;\s?/,"")); i++; }
+      out += "<blockquote>"+mdBlocks(q.join("\n"))+"</blockquote>"; continue;
+    }
+    if(/^\s*[-*+]\s+/.test(line)){                               // unordered list
+      const items = [];
+      while(i < lines.length && /^\s*[-*+]\s+/.test(lines[i])){ items.push(lines[i].replace(/^\s*[-*+]\s+/,"")); i++; }
+      out += "<ul>"+items.map(t=>"<li>"+mdInline(t)+"</li>").join("")+"</ul>"; continue;
+    }
+    if(/^\s*\d+[.)]\s+/.test(line)){                             // ordered list
+      const items = [];
+      while(i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])){ items.push(lines[i].replace(/^\s*\d+[.)]\s+/,"")); i++; }
+      out += "<ol>"+items.map(t=>"<li>"+mdInline(t)+"</li>").join("")+"</ol>"; continue;
+    }
+    if(line.trim()===""){ i++; continue; }                      // blank
+    const para = [];                                            // paragraph
+    while(i < lines.length && lines[i].trim()!=="" && !P.test(lines[i])){ para.push(lines[i]); i++; }
+    out += "<p>"+mdInline(para.join(" "))+"</p>";                // soft-wrap lines
+  }
+  return out;
+}
+// render an assistant message: markdown body + the groundwire audit footer split
+// out and styled muted. Returns a DOM node (tina4js embeds Nodes verbatim).
+function renderRich(content){
+  const el = document.createElement("div"); el.className = "md";
+  let body = content, foot = "";
+  const idx = content.indexOf("\n\n— groundwire ▸");
+  if(idx >= 0){ body = content.slice(0, idx); foot = content.slice(idx+2).trim(); }
+  el.innerHTML = mdToHtml(body) + (foot ? '<div class="foot">'+esc(foot)+"</div>" : "");
+  return el;
+}
 
 // -- state ------------------------------------------------------------------
 const models = signal([]);            const model = signal(null);
@@ -189,11 +280,11 @@ const app = html`
       ${() => messages.value.map(m => html`
         <div class=${"msg "+m.role}>
           <div class="who">${m.role}</div>
-          <div class="txt">${m.content}</div>
+          <div class="txt">${m.role==="assistant" ? renderRich(m.content) : m.content}</div>
         </div>`)}
       ${() => streaming.value ? html`
         <div class="msg assistant"><div class="who">assistant</div>
-          <div class="txt">${streamText}${() => streamText.value ? "" : "…"}</div></div>` : null}
+          <div class="txt">${() => streamText.value ? renderRich(streamText.value) : "…"}</div></div>` : null}
     </div>
 
     <div class="panel" ?hidden=${() => !showPanel.value}>
