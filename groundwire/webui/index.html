@@ -107,6 +107,34 @@
   .addbtn{width:100%;padding:7px;border:1px solid var(--rust);border-radius:7px;
     background:transparent;color:var(--rust);cursor:pointer;font-weight:600;margin-top:6px}
   .copy{font-size:11px;cursor:pointer;color:var(--rust);float:right}
+  /* setup modal */
+  .gear{cursor:pointer;font-size:16px;border:none;background:none;color:var(--muted);padding:2px 4px}
+  .gear:hover{color:var(--rust)}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;
+    align-items:center;justify-content:center;z-index:50}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    width:580px;max-width:92vw;max-height:88vh;overflow-y:auto;padding:20px 22px;
+    box-shadow:0 20px 60px rgba(0,0,0,.35)}
+  .card h2{margin:0 0 2px;font-size:18px}
+  .card .sub{color:var(--muted);font-size:12px;margin:0 0 8px}
+  .card h3{margin:18px 0 8px;color:var(--ink);font-size:13px;text-transform:none;letter-spacing:0}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+  .dot.up{background:#3fae5a} .dot.down{background:var(--rust)}
+  .row{display:flex;gap:8px;align-items:center;margin:6px 0}
+  .row input[type=text]{flex:1}
+  .btn{padding:7px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+    color:var(--ink);cursor:pointer;font-weight:600;white-space:nowrap;font:inherit}
+  .btn:hover{border-color:var(--rust)} .btn:disabled{opacity:.5;cursor:default}
+  .btn.pri{background:var(--rust);color:var(--rust-ink);border-color:var(--rust)}
+  .mlist{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+  .chip{padding:3px 10px;border:1px solid var(--line);border-radius:20px;font-size:12px;
+    cursor:pointer;background:var(--bg)} .chip:hover{border-color:var(--rust)}
+  .hint{font-size:12px;color:var(--muted);background:var(--bg);border:1px dashed var(--line);
+    border-radius:8px;padding:8px 10px;margin:8px 0}
+  .brow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .ok{color:#3fae5a;font-size:12px;font-weight:600} .no{color:var(--rust);font-size:12px;font-weight:600}
+  select.sel{padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font:inherit}
+  code.k{font:12px ui-monospace,SFMono-Regular,monospace;background:var(--line);padding:1px 5px;border-radius:4px}
 </style>
 </head>
 <body>
@@ -192,6 +220,11 @@ const sources = signal([]);           // sanctioned paths
 const debug = signal(null);           // {mode, context, sources}
 const showPanel = signal(true);
 const newPath = signal("");           const newLocal = signal(false);
+// setup / settings
+const showSetup = signal(false);      const status = signal(null);
+const hostVal = signal("");           const busy = signal(false);
+const bName = signal("");             const bType = signal("gemini");
+const bModel = signal("");
 
 // -- api --------------------------------------------------------------------
 const J = (r) => r.json();
@@ -209,6 +242,16 @@ async function addSource(){
 }
 async function toggleSource(id, enabled){ sources.value = await post("/api/sources/toggle", {id, enabled}); }
 async function removeSource(id){ sources.value = await post("/api/sources/remove", {id}); }
+
+// -- setup / settings -------------------------------------------------------
+async function loadStatus(){ status.value = await fetch("/api/status").then(J); }
+function openSetup(){ showSetup.value = true; loadStatus().then(()=>{ hostVal.value = (status.value&&status.value.ollama.host) || "127.0.0.1:11434"; }); }
+async function applyCfg(body){ busy.value=true; try{ status.value = await post("/api/config", body); await loadModels(); } finally { busy.value=false; } }
+async function saveHost(){ await applyCfg({ollama_host: hostVal.value.trim()}); }
+async function recheck(){ await loadStatus(); await loadModels(); }
+async function addBackend(){ if(!bModel.value.trim()) return; await applyCfg({add_backend:{name:bName.value.trim(), type:bType.value, model:bModel.value.trim()}}); bName.value=""; bModel.value=""; }
+async function removeBackend(name){ await applyCfg({remove_backend:name}); }
+async function useModel(name){ await applyCfg({default:name}); model.value = name; }
 
 // -- send a turn (inspect first, then stream) -------------------------------
 async function send(){
@@ -272,7 +315,11 @@ const app = html`
       ${() => models.value.map(m => html`
         <option value=${m} ?selected=${() => m===model.value}>${m}</option>`)}
     </select>
+    ${() => models.value.length===0 ? html`
+      <span class="hint" style="margin:0;padding:4px 9px;cursor:pointer"
+            @click=${openSetup}>No model — open Setup ⚙</span>` : null}
     <span class="grow"></span>
+    <button class="gear" title="Setup" @click=${openSetup}>⚙</button>
     <button class=${() => "pill" + (showPanel.value ? " on" : "")}
             @click=${() => showPanel.value = !showPanel.value}>🔍 Debug</button>
   </div>
@@ -329,7 +376,75 @@ const app = html`
         ${() => streaming.value ? "…" : "Send"}</button>
     </form>
   </div>
-</div>`;
+</div>
+
+${() => showSetup.value ? html`
+<div class="modal" @click=${(e)=>{ if(e.target.classList.contains("modal")) showSetup.value=false; }}>
+  <div class="card">
+    <h2>Setup</h2>
+    <p class="sub">Pick the model groundwire answers with. Your files stay on this
+      machine; cloud API keys are read from the environment, never stored here.</p>
+
+    <h3>Local Ollama</h3>
+    ${() => { const o = (status.value && status.value.ollama) || {running:false,models:[],host:""};
+      return html`
+      <p><span class=${"dot " + (o.running ? "up" : "down")}></span>
+         <b>${o.running ? "Running" : "Not running"}</b> &nbsp;<code class="k">${o.host}</code></p>
+      <div class="row">
+        <input type="text" .value=${hostVal} @input=${(e)=>{ hostVal.value=e.target.value; }}
+               placeholder="127.0.0.1:11434">
+        <button class="btn" @click=${saveHost} ?disabled=${()=>busy.value}>Save</button>
+        <button class="btn" @click=${recheck} ?disabled=${()=>busy.value}>Recheck</button>
+      </div>
+      ${() => o.running
+        ? (o.models.length
+            ? html`<div class="mlist">${o.models.map(m => html`
+                <span class="chip" title="Set as default" @click=${()=>useModel(m)}
+                  >${m}${(status.value && status.value.default)===m ? " ✓" : ""}</span>`)}</div>`
+            : html`<div class="hint">Ollama is running but has no chat models. Pull one —
+                <code class="k">ollama pull qwen2.5:7b</code> — then Recheck.</div>`)
+        : html`<div class="hint">Can't reach Ollama. Install it from ollama.com and run
+            <code class="k">ollama serve</code>, then Recheck — or add a cloud model below.</div>`}
+      `; }}
+
+    <h3>Cloud models</h3>
+    ${() => ((status.value && status.value.cloud) || []).map(c => html`
+      <div class="brow">
+        <b>${c.name}</b> <span style="color:var(--muted)">${c.model}</span>
+        <span class="grow"></span>
+        ${c.key_present ? html`<span class="ok">key set</span>`
+                        : html`<span class="no">set ${c.key_env}</span>`}
+        <span class="x" @click=${()=>removeBackend(c.name)}>✕</span>
+      </div>`)}
+    <div class="row">
+      <select class="sel" @change=${(e)=>{ bType.value=e.target.value; }}>
+        ${() => ((status.value && status.value.providers) || ["gemini"]).map(p => html`
+          <option value=${p} ?selected=${()=>p===bType.value}>${p}</option>`)}
+      </select>
+      <input type="text" placeholder="model id — gpt-4o, gemini-2.0-flash…"
+             .value=${bModel} @input=${(e)=>{ bModel.value=e.target.value; }}>
+      <button class="btn pri" @click=${addBackend} ?disabled=${()=>busy.value}>Add</button>
+    </div>
+    <input type="text" placeholder="display name (optional)" .value=${bName}
+           @input=${(e)=>{ bName.value=e.target.value; }} style="margin-top:2px">
+    <div class="hint">Cloud keys come from environment variables
+      (<code class="k">OPENAI_API_KEY</code>, <code class="k">GEMINI_API_KEY</code>, …).
+      Set the variable and restart the app; the key then shows as “set”.</div>
+
+    <h3>Default model</h3>
+    <div class="row">
+      <select class="sel" @change=${(e)=>useModel(e.target.value)}>
+        ${() => { const bs = (status.value && status.value.backends) || [];
+          return bs.length
+            ? bs.map(m => html`<option value=${m}
+                ?selected=${()=>m===(status.value && status.value.default)}>${m}</option>`)
+            : html`<option>— none configured —</option>`; }}
+      </select>
+      <span class="grow"></span>
+      <button class="btn pri" @click=${()=>{ showSetup.value=false; }}>Done</button>
+    </div>
+  </div>
+</div>` : null}`;
 
 document.getElementById("app").append(app);
 loadModels(); loadConvs(); loadSources();

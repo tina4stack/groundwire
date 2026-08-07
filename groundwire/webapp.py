@@ -24,7 +24,9 @@ import os
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import make_session, save_config
+from .config import (make_session, save_config, build_backends,
+                     ollama_status, ollama_host, apply_config)
+from .backends import PROVIDERS
 
 WEBUI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")
 _CTYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -87,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/models":
             return self._json({"models": sorted(app.session.backends),
                                "default": app.session.default_backend})
+        if p == "/api/status":
+            return self._json(self._status())
         if p == "/api/sources":
             return self._json(app.store.list_paths())
         if p == "/api/conversations":
@@ -122,7 +126,47 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/conversations/delete":
             app.store.delete_conversation(int(b["id"]))
             return self._json({"ok": True})
+        if p == "/api/config":
+            return self._json(self._config(b))
         return self._json({"error": "not found"}, 404)
+
+    # -- setup / settings ---------------------------------------------------- #
+    @staticmethod
+    def _key_env(entry):
+        """Which env var holds this cloud backend's API key."""
+        if entry.get("api_key_env"):
+            return entry["api_key_env"]
+        typ = entry.get("type")
+        return PROVIDERS[typ][1] if typ in PROVIDERS else ""
+
+    def _status(self):
+        """Everything the Setup screen needs: is Ollama up + its chat models,
+        the configured cloud backends (with API-key presence), the live backend
+        list, and the default. Keys themselves are never returned."""
+        app = self.APP
+        cloud = []
+        for e in app.cfg.get("backends", []):
+            env = self._key_env(e)
+            cloud.append({"name": e.get("name"), "type": e.get("type"),
+                          "model": e.get("model"), "key_env": env,
+                          "key_present": bool(env and os.environ.get(env))})
+        return {"ollama": ollama_status(ollama_host(app.cfg)),
+                "providers": sorted(PROVIDERS),
+                "backends": sorted(app.session.backends),
+                "cloud": cloud,
+                "default": app.session.default_backend}
+
+    def _config(self, b):
+        """Apply a settings change, persist it, hot-reload the live backends."""
+        app = self.APP
+        apply_config(app.cfg, b)
+        save_config(app.cfg)
+        app.session.backends = build_backends(app.cfg)      # hot-reload, no restart
+        d = app.cfg.get("default_backend")
+        if d not in app.session.backends:
+            d = next(iter(app.session.backends), None)
+        app.session.default_backend = d
+        return self._status()
 
     # -- the streaming chat turn (SSE) -------------------------------------- #
     def _chat(self, b):

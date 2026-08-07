@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.request
 
 from .backends import make_backend, OllamaBackend
 from .store import Store
@@ -46,6 +47,49 @@ def save_config(cfg: dict, path: str = CONFIG_PATH):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+
+
+def ollama_host(cfg: dict) -> str:
+    """The Ollama host the app talks to (env override wins)."""
+    return os.environ.get("GROUNDWIRE_OLLAMA_HOST", cfg.get("ollama_host")
+                          or DEFAULT_CONFIG["ollama_host"])
+
+
+def ollama_status(host: str) -> dict:
+    """Probe a local Ollama: is it reachable, and which CHAT models does it have?
+    Distinguishes 'not running' (connection refused) from 'running, no models'."""
+    probe = OllamaBackend(host)                        # normalises host -> http://…
+    try:
+        with urllib.request.urlopen(probe.host + "/api/tags", timeout=3) as r:
+            data = json.loads(r.read())
+        names = [m.get("name", "") for m in data.get("models", [])]
+        return {"host": host, "running": True,
+                "models": [m for m in names if m and "embed" not in m.lower()]}
+    except Exception:
+        return {"host": host, "running": False, "models": []}
+
+
+def apply_config(cfg: dict, change: dict) -> dict:
+    """Apply a Setup-screen change to `cfg` in place (pure dict mutation, no I/O).
+    Recognised keys: `ollama_host`, `add_backend` {name,type,model}, `remove_backend`
+    (name), `default`. Adding a backend de-dupes by name. Returns cfg."""
+    if "ollama_host" in change:
+        cfg["ollama_host"] = ((change["ollama_host"] or "").strip()
+                              or DEFAULT_CONFIG["ollama_host"])
+    ab = change.get("add_backend")
+    if ab and ab.get("type") and ab.get("model"):
+        name = (ab.get("name") or ab.get("model") or "").strip()
+        if name:
+            cfg["backends"] = [x for x in cfg.get("backends", [])
+                               if x.get("name") != name]
+            cfg["backends"].append({"name": name, "type": ab["type"],
+                                    "model": ab["model"].strip()})
+    if change.get("remove_backend"):
+        cfg["backends"] = [x for x in cfg.get("backends", [])
+                           if x.get("name") != change["remove_backend"]]
+    if "default" in change:
+        cfg["default_backend"] = change["default"] or None
+    return cfg
 
 
 def build_backends(cfg: dict, get_key=None):

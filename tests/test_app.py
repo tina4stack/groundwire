@@ -153,3 +153,36 @@ def test_ask_and_store_persists_both_messages(tmp_path):
     conv = store.get_conversation(conv_id)
     assert [m["role"] for m in conv["messages"]] == ["user", "assistant"]
     assert "ANSWER" in conv["messages"][1]["content"]
+
+
+# -- Setup screen: config mutation + ollama status (network-free) -------------
+def test_apply_config_add_dedupe_default_remove():
+    from groundwire.config import apply_config
+    cfg = {"ollama_host": "127.0.0.1:11434", "backends": [], "default_backend": None}
+    apply_config(cfg, {"add_backend": {"name": "Gemini", "type": "gemini",
+                                       "model": "gemini-2.0-flash"}})
+    assert [b["name"] for b in cfg["backends"]] == ["Gemini"]
+    apply_config(cfg, {"add_backend": {"name": "Gemini", "type": "gemini",
+                                       "model": "gemini-2.0-flash"}})   # de-dupe by name
+    assert len(cfg["backends"]) == 1
+    apply_config(cfg, {"default": "Gemini"})
+    assert cfg["default_backend"] == "Gemini"
+    apply_config(cfg, {"ollama_host": "box:1234"})
+    assert cfg["ollama_host"] == "box:1234"
+    apply_config(cfg, {"ollama_host": ""})                              # blank -> default
+    assert cfg["ollama_host"] == "127.0.0.1:11434"
+    apply_config(cfg, {"remove_backend": "Gemini"})
+    assert cfg["backends"] == []
+
+
+def test_apply_config_ignores_incomplete_backend():
+    from groundwire.config import apply_config
+    cfg = {"backends": []}
+    apply_config(cfg, {"add_backend": {"name": "X", "type": "gemini"}})  # no model
+    assert cfg["backends"] == []
+
+
+def test_ollama_status_not_running():
+    from groundwire.config import ollama_status
+    s = ollama_status("127.0.0.1:1")          # nothing listens on port 1 -> refused
+    assert s["running"] is False and s["models"] == [] and s["host"] == "127.0.0.1:1"
