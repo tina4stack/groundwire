@@ -348,22 +348,6 @@ const app = html`
       ` : html`<p style="color:var(--muted)">Send a message to see exactly what
         context groundwire injects — before the model answers.</p>`}
 
-      <h3 class="sec">Memory sources</h3>
-      ${() => sources.value.map(s => html`
-        <div class="path">
-          <input type="checkbox" ?checked=${s.enabled}
-                 @change=${(e)=>toggleSource(s.id, e.target.checked)}>
-          <span class="p" title=${s.path}>${s.scope}</span>
-          ${() => s.local_only ? html`<span class="lo">local-only</span>` : null}
-          <span class="x" @click=${()=>removeSource(s.id)}>✕</span>
-        </div>`)}
-      <div class="sec">
-        <input type="text" placeholder="/path/to/folder" .value=${newPath}
-               @input=${(e)=>{ newPath.value=e.target.value; }}>
-        <label class="chk"><input type="checkbox" ?checked=${newLocal}
-          @change=${(e)=>{ newLocal.value=e.target.checked; }}> local-only (hide from cloud models)</label>
-        <button class="addbtn" @click=${addSource}>Add sanctioned folder</button>
-      </div>
     </div>
   </div>
 
@@ -440,6 +424,28 @@ ${() => showSetup.value ? html`
                 ?selected=${()=>m===(status.value && status.value.default)}>${m}</option>`)
             : html`<option>— none configured —</option>`; }}
       </select>
+    </div>
+
+    <h3>Memory sources</h3>
+    <p class="sub">Folders groundwire may retrieve from. Nothing is indexed until you add one.</p>
+    ${() => sources.value.map(s => html`
+      <div class="brow">
+        <input type="checkbox" ?checked=${s.enabled}
+               @change=${(e)=>toggleSource(s.id, e.target.checked)}>
+        <span title=${s.path}>${s.scope}</span>
+        ${() => s.local_only ? html`<span class="lo">local-only</span>` : null}
+        <span class="grow"></span>
+        <span class="x" @click=${()=>removeSource(s.id)}>✕</span>
+      </div>`)}
+    <div class="row">
+      <input type="text" placeholder="/path/to/folder" .value=${newPath}
+             @input=${(e)=>{ newPath.value=e.target.value; }}>
+      <button class="btn" @click=${addSource}>Add folder</button>
+    </div>
+    <label class="chk"><input type="checkbox" ?checked=${newLocal}
+      @change=${(e)=>{ newLocal.value=e.target.checked; }}> local-only (hide from cloud models)</label>
+
+    <div class="row" style="margin-top:14px">
       <span class="grow"></span>
       <button class="btn pri" @click=${()=>{ showSetup.value=false; }}>Done</button>
     </div>
