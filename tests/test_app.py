@@ -1,0 +1,70 @@
+"""Session pipeline tests with a fake backend (no network)."""
+from groundwire.backends import Backend
+from groundwire.store import Store
+from groundwire.app import Session
+
+
+class FakeBackend(Backend):
+    """Records the messages it's sent; returns a fixed answer. Because it never
+    emits a [[SPAN:…]] handle, quote turns exercise the verbatim FALLBACK."""
+    name = "fake"
+
+    def __init__(self):
+        self.seen = []
+
+    def chat(self, messages, *, stream=True, options=None):
+        self.seen.append((messages, options))
+        return iter(["ANSWER"]) if stream else ["ANSWER"]
+
+    def complete(self, messages, options=None):
+        self.seen.append((messages, options))
+        return "ANSWER"
+
+
+DOC = ("CHAPTER I\n\nALPHA_ONE the first chapter body. " + "a " * 300 +
+       "\n\nCHAPTER II\n\nBETA_TWO the second chapter body. " + "b " * 300)
+
+
+def _session(tmp_path):
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "book.txt").write_text(DOC, encoding="utf-8")
+    store = Store(str(tmp_path / "g.db"))
+    store.add_path(str(folder), "docs")
+    fb = FakeBackend()
+    return Session(store, {"fake": fb}, "fake"), fb, store
+
+
+def test_normal_turn_injects_context_and_appends_footer(tmp_path):
+    sess, fb, _ = _session(tmp_path)
+    out = "".join(sess.turn(None, "what is in the first chapter body?"))
+    assert "ANSWER" in out
+    assert "— groundwire ▸ retrieved:" in out                # audit footer
+    # the backend was handed a system CONTEXT block (grounding)
+    sysmsgs = [m for m in fb.seen[-1][0] if m["role"] == "system"]
+    assert sysmsgs and "CONTEXT" in sysmsgs[0]["content"]
+
+
+def test_quote_turn_fills_verbatim_via_fallback(tmp_path):
+    sess, fb, _ = _session(tmp_path)
+    out = "".join(sess.turn(None, "quote the full text of chapter 2"))
+    # fake never emitted the handle -> fallback patched the real chapter-2 bytes
+    assert "BETA_TWO" in out
+    # and the backend was NOT shown the passage (only a handle offer)
+    assert "BETA_TWO" not in str(fb.seen[-1][0])
+
+
+def test_read_turn_injects_the_span_text(tmp_path):
+    sess, fb, _ = _session(tmp_path)
+    "".join(sess.turn(None, "summarize chapter 1"))
+    sysmsgs = [m for m in fb.seen[-1][0] if m["role"] == "system"]
+    assert sysmsgs and "ALPHA_ONE" in sysmsgs[0]["content"]   # chapter 1 injected
+    assert fb.seen[-1][1] and "num_ctx" in fb.seen[-1][1]     # context grown to fit
+
+
+def test_ask_and_store_persists_both_messages(tmp_path):
+    sess, _, store = _session(tmp_path)
+    conv_id, answer = sess.ask_and_store(None, "what is in chapter one?")
+    conv = store.get_conversation(conv_id)
+    assert [m["role"] for m in conv["messages"]] == ["user", "assistant"]
+    assert "ANSWER" in conv["messages"][1]["content"]
