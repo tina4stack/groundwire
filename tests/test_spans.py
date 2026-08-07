@@ -144,3 +144,53 @@ def test_quote_vs_read_routing():
     # "how does chapter 2 start" is a quote (verbatim opening), not a read
     assert QUOTE_INTENT.search("how does chapter 2 start")
     assert not READ_INTENT.search("how does chapter 2 start")
+
+
+# --- colon-numbered divisions ("psalm 23", "john 3:16") -------------------- #
+# Two named divisions whose bodies number as chapter:verse and reset to 1:1.
+# Generic pattern (scripture, legal codes, specs) -- no bible-specific data.
+_ALPHA = "\n".join(f"{c}:{v} alpha ch{c} v{v} lorem ipsum dolor sit amet."
+                   for c in range(1, 4) for v in range(1, 9))
+_PSALMS = "\n".join(f"{c}:{v} psalms ch{c} v{v} the field of green pastures."
+                    for c in range(1, 26) for v in range(1, 7))
+NUMBERED = f"The Book of Alpha\n\n{_ALPHA}\n\nThe Book of Psalms\n\n{_PSALMS}\n"
+
+
+def _numreg():
+    return SpanRegistry().register_file("lib/scripture.txt", NUMBERED)
+
+
+def test_numbered_divisions_parsed():
+    reg = _numreg()
+    divs = reg.numbered["lib/scripture.txt"]
+    assert len(divs) == 2                              # Alpha + Psalms
+    assert divs[1]["primary"] == "psalms"
+    assert 23 in divs[1]["chapters"]                   # Psalm 23 exists
+
+
+def test_positional_quote_resolves_to_right_division():
+    reg = _numreg()
+    cands = reg.resolve("quote psalm 23")
+    assert cands, "psalm 23 should resolve structurally"
+    txt = reg.text_of(cands[0][0])
+    assert "psalms ch23 v1" in txt                     # the RIGHT chapter
+    assert "alpha" not in txt                          # not the other division
+
+
+def test_positional_quote_is_case_insensitive():
+    reg = _numreg()
+    assert reg.resolve("Quote PSALM 23")               # uppercase resolves too
+
+
+def test_verse_level_reference():
+    reg = _numreg()
+    cands = reg.resolve("quote alpha 2:3")
+    assert cands
+    txt = reg.text_of(cands[0][0])
+    assert "alpha ch2 v3" in txt
+    assert "ch2 v4" not in txt                          # exactly that verse
+
+
+def test_unmatched_division_does_not_resolve():
+    reg = _numreg()
+    assert not reg.resolve("quote leviticus 5")        # no such division here

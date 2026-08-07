@@ -65,6 +65,21 @@ _MIN_BODY = 400            # bodies shorter than this are table-of-contents /
                            # index entries (which duplicate every heading), not
                            # real chapters -- skip them so ordinals line up
 
+# COLON-NUMBERED corpora: named divisions ("The Book of Psalms") whose bodies
+# number as "chapter:verse" and reset to "1:1" at each new division. Common far
+# beyond scripture -- legal codes, contracts, specs ("section 4:2"), RFCs. We
+# address them positionally: "psalm 23" -> chapter 23 of the Psalms division;
+# "john 3:16" -> that one verse. Generic pattern, NOT bible-specific data.
+_VERSE = re.compile(r"(?m)^[ \t]*(\d+)[ \t]*:[ \t]*(\d+)\b")
+_MIN_VERSES = 20           # fewer than this -> not a numbered corpus
+# words in a division HEADER that don't name it (drop so 'psalms' is the key)
+_DIV_GENERIC = frozenset(
+    "the of a an book books gospel gospels epistle epistles letter letters gene "
+    "first second third fourth fifth general according saint st prophet prophets "
+    "called moses testament old new gener".split())
+# a positional reference in a query: "<name> <chapter>[:<verse>]"
+_POS_REF = re.compile(r"\b([a-z][a-z]+)\s+(\d+)(?:\s*[:.]\s*(\d+))?\b", re.I)
+
 
 def _to_int(tok: str):
     tok = tok.strip().lower()
@@ -93,6 +108,7 @@ class SpanRegistry:
         self.units = {}          # source -> {unit_type: [(body_start, end), ...]}
         self.rawmarks = {}       # source -> [(pos, unit_type), ...] all markers
         self.spans = {}          # handle -> (source, start, end, label)
+        self.numbered = {}       # source -> [division dicts] (colon-numbered)
 
     def clear(self):
         self.__init__()
@@ -118,7 +134,57 @@ class SpanRegistry:
             by_type.setdefault(typ, []).append((hend, nxt))  # body after heading
         if by_type:
             self.units[title] = by_type
+        self._index_numbered(title, text)
         return self
+
+    # -- colon-numbered division index (bible/legal/spec addressing) ---------- #
+    def _index_numbered(self, title: str, text: str):
+        """Detect a 'chapter:verse' numbered corpus and record, per named
+        division, the byte range of each chapter and verse. A division begins at
+        every '1:1' (numbering resets); its NAME is the nearest non-empty,
+        non-verse line above it ('The Book of Psalms')."""
+        verses = [(m.start(), m.end(), int(m.group(1)), int(m.group(2)))
+                  for m in _VERSE.finditer(text)]
+        if len(verses) < _MIN_VERSES:
+            return
+        # division start = each verse that is chapter 1, verse 1
+        starts = [i for i, (_, _, c, v) in enumerate(verses) if c == 1 and v == 1]
+        if not starts:
+            return
+        divs = []
+        for si, vi in enumerate(starts):
+            v_end = starts[si + 1] if si + 1 < len(starts) else len(verses)
+            div_verses = verses[vi:v_end]
+            first_pos = div_verses[0][0]
+            end_pos = (verses[v_end][0] if v_end < len(verses) else len(text))
+            name = self._name_above(text, first_pos)
+            keys = {t for t in re.findall(r"[a-z]+", name.lower())
+                    if len(t) >= 3 and t not in _DIV_GENERIC}
+            primary = (re.findall(r"[a-z]+", name.lower()) or [""])[-1]
+            # chapter ranges: from a chapter's first verse to the next chapter's
+            chapters, vspans, order = {}, {}, []
+            for j, (vs, ve, c, v) in enumerate(div_verses):
+                nxt = (div_verses[j + 1][0] if j + 1 < len(div_verses) else end_pos)
+                vspans[(c, v)] = (vs, nxt)
+                if c not in chapters:
+                    chapters[c] = [vs, nxt]
+                    order.append(c)
+                else:
+                    chapters[c][1] = nxt
+            divs.append({"name": name, "keys": keys, "primary": primary,
+                         "chapters": {c: tuple(r) for c, r in chapters.items()},
+                         "verses": vspans})
+        if divs:
+            self.numbered[title] = divs
+
+    @staticmethod
+    def _name_above(text: str, pos: int) -> str:
+        for line in reversed(text[:pos].splitlines()):
+            s = line.strip()
+            if not s or re.match(r"^\d+\s*:\s*\d+", s):
+                continue
+            return s
+        return ""
 
     # coarsest-first: a "summarize the whole book" segments by book, then part,
     # then chapter. 'section' sits AFTER 'chapter' -- in Gutenberg texts stray
@@ -220,6 +286,11 @@ class SpanRegistry:
             if h not in seen:
                 seen.add(h)
                 out.append((h, lab))
+        # colon-numbered positional refs ("psalm 23", "john 3:16")
+        for h, lab in self.resolve_numbered(question):
+            if h not in seen:
+                seen.add(h)
+                out.append((h, lab))
         if not out and opening:
             # "how does <book> start / the opening of <book>" with no chapter
             # number -> the first chapter's opening (the real narrative start).
@@ -229,6 +300,58 @@ class SpanRegistry:
                 start, end = ranges[0]
                 out.append(self._materialize(src, start, end, "opening",
                                              f"the opening of {src}", True))
+        return out
+
+    @staticmethod
+    def _match_division(divs, name_tok: str):
+        """Pick the division a query name-token means. Case-insensitive; matches
+        exact key or a stem/prefix ('psalm' -> the 'Psalms' division), preferring
+        a match on the division's PRIMARY (most distinctive) token."""
+        def score(div):
+            keys, primary = div["keys"], div["primary"]
+            if name_tok in keys:
+                return 3 if primary == name_tok else 2
+            for k in keys:
+                if k.startswith(name_tok) or name_tok.startswith(k):
+                    prim = primary.startswith(name_tok) or name_tok.startswith(primary)
+                    return 2 if prim else 1
+            return 0
+        best, best_s = None, 0
+        for div in divs:
+            s = score(div)
+            if s > best_s:
+                best, best_s = div, s
+        return best
+
+    def resolve_numbered(self, question: str):
+        """Resolve positional refs in colon-numbered corpora: '<name> <chap>' or
+        '<name> <chap>:<verse>' -> the exact chapter/verse span of the matching
+        named division. Case-insensitive throughout. Empty if none apply."""
+        out, seen = [], set()
+        for m in _POS_REF.finditer(question):
+            name_tok = m.group(1).lower()
+            chap = int(m.group(2))
+            verse = int(m.group(3)) if m.group(3) else None
+            if len(name_tok) < 3 or name_tok in _DIV_GENERIC:
+                continue
+            for src, divs in self.numbered.items():
+                div = self._match_division(divs, name_tok)
+                if not div:
+                    continue
+                nm = div["primary"] or name_tok
+                if verse is not None and (chap, verse) in div["verses"]:
+                    s, e = div["verses"][(chap, verse)]
+                    label, slug = f"{nm} {chap}:{verse} of {src}", f"{_stem(nm)}-{chap}-{verse}"
+                elif verse is None and chap in div["chapters"]:
+                    s, e = div["chapters"][chap]
+                    label, slug = f"{nm} {chap} of {src}", f"{_stem(nm)}-{chap}"
+                else:
+                    continue
+                handle = f"{_stem(src)}-{slug}"
+                self.spans[handle] = (src, s, e, label)
+                if handle not in seen:
+                    seen.add(handle)
+                    out.append((handle, label))
         return out
 
     # -- prompt offer + post-fill -------------------------------------------- #
