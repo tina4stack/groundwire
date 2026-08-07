@@ -18,10 +18,57 @@ from __future__ import annotations
 
 import os
 
+import re
+
 from .backends import Backend, OpenAICompatBackend
-from .spans import SpanRegistry, QUOTE_INTENT, READ_INTENT
+from .spans import SpanRegistry, QUOTE_INTENT, READ_INTENT, _NUMWORD
+from .memory_systems import terms as _terms
 from .mapreduce import summarize
 from . import proxy as P                     # reuse CONTEXT_HEADER, footers, sizing
+
+# Words that live in a QUOTE *request* but not in the passage itself -- they must
+# not count as evidence that a retrieved chunk matches the request.
+_QUOTE_SCAFFOLD = frozenset(
+    "quote quotes quotation reproduce verbatim exact exactly text texts passage "
+    "passages full entire whole complete word words wording print printed show "
+    "shows give given line lines sentence sentences paragraph paragraphs please "
+    "from starts start begins begin beginning opening excerpt".split())
+
+# A POSITIONAL reference addresses a numbered/ordinal unit ("psalm 23", "john
+# 3:16", "sonnet 18", "canto iv", "act two"). Quoting one is an ADDRESSING
+# problem, not a search one: a lexical hit for "psalm 23" surfaces passages that
+# MENTION psalm 23 (e.g. Acts 13:33, "in the second psalm"), never psalm 23
+# itself. So when a positional quote can't be resolved to a structural span, we
+# must NOT fabricate from a search hit -- we fall through to normal grounding.
+# The division words are a generic literary/legal set, not corpus-specific data.
+_POSITIONAL = re.compile(
+    r"\b\d+\s*:\s*\d+\b"                             # verse/section refs: 3:16
+    r"|\b\d+\b"                                      # any number: psalm 23
+    r"|\b(?:chapter|canto|book|part|section|letter|verse|psalm|sonnet|hymn|"
+    r"stanza|act|scene|paragraph|line|page|article|clause|figure|table)\s+"
+    r"(?:[ivxlcdm]+|(?:" + _NUMWORD + r"))\b",       # roman/word ordinals
+    re.I)
+
+
+def _looks_positional(q: str) -> bool:
+    return bool(_POSITIONAL.search(q))
+
+
+def _quote_hit_matches(q: str, doc: str) -> bool:
+    """Guard the CONTENT-anchored quote fallback (positional refs are handled by
+    _looks_positional upstream). A k-best lexical hit becomes a VERBATIM quote
+    only if the passage genuinely shares a salient term with the request --
+    salient = alphabetic, length >= 3, not quote-scaffolding. On no match we
+    return False and the turn falls through to normal grounded retrieval, whose
+    CONTEXT header tells the model to admit it can't find the exact text rather
+    than fabricate it."""
+    salient = [t for t in _terms(q)
+               if len(t) >= 3 and any(c.isalpha() for c in t)
+               and t not in _QUOTE_SCAFFOLD]
+    if not salient:                       # nothing distinctive to verify against
+        return False
+    dterms = set(_terms(doc))
+    return any(t in dterms for t in salient)
 
 
 class Session:
@@ -95,12 +142,18 @@ class Session:
 
         # 3) QUOTE verbatim (structural or content anchor): offer a handle, fill
         if QUOTE_INTENT.search(q):
-            if not cands and mem is not None and mem._next:
-                hits = mem.retrieve(q, k=1)
-                if hits:
-                    cid, text, _ = hits[0]
-                    lbl = f"the passage matching your request (from {mem.source_of(cid) or '?'})"
-                    cands = [(spans.register_text_span(lbl, text), lbl)]
+            if (not cands and mem is not None and mem._next
+                    and not _looks_positional(q)):
+                # CONTENT quote (no numbered/ordinal unit): take the top-ranked
+                # hit that ACTUALLY shares a salient term; never fabricate a
+                # verbatim quote from a non-match. A POSITIONAL quote we couldn't
+                # resolve structurally is deliberately NOT satisfied by search --
+                # it falls through to normal grounding instead.
+                for cid, text, _ in mem.retrieve(q, k=5):
+                    if _quote_hit_matches(q, text):
+                        lbl = f"the passage matching your request (from {mem.source_of(cid) or '?'})"
+                        cands = [(spans.register_text_span(lbl, text), lbl)]
+                        break
             if cands:
                 fallback = cands[0][0]
                 return {"mode": "quote", "offer": spans.offer(cands),

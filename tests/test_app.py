@@ -76,6 +76,45 @@ def test_inspect_reports_injected_context_without_calling_model(tmp_path):
     assert "BETA_TWO" in q["context"]             # the verbatim bytes that fill in
 
 
+def _bible_ish_session(tmp_path):
+    """A corpus where a positional quote ('psalm 23') can't be satisfied: no
+    chunk carries the word 'psalm', so a naive k=1 quote would post-fill the
+    WRONG passage (the classic 'quote psalm 23 -> Acts 13 junk' bug)."""
+    folder = tmp_path / "lib"
+    folder.mkdir()
+    (folder / "shepherd.txt").write_text(
+        "23:1 The LORD is my shepherd; I shall not want. "
+        + "green pastures still waters restoreth my soul " * 40, encoding="utf-8")
+    # the trap: this distractor MENTIONS 'psalm' (as Acts 13:33 does) so a
+    # term-overlap guard alone would still wrongly quote it for 'psalm 23'.
+    (folder / "acts.txt").write_text(
+        "13:33 as it is also written in the second psalm, Thou art my Son. "
+        + "Israel Pilate Galilee resurrection sepulchre brethren " * 40,
+        encoding="utf-8")
+    store = Store(str(tmp_path / "g.db"))
+    store.add_path(str(folder), "lib")
+    return Session(store, {"fake": FakeBackend()}, "fake")
+
+
+def test_quote_guard_rejects_unmatched_passage(tmp_path):
+    sess = _bible_ish_session(tmp_path)
+    # positional quote of a numbered unit we can't resolve structurally: even
+    # though a distractor chunk MENTIONS 'psalm' (Acts 13:33), it must NOT be
+    # post-filled as the verbatim quote. Falls through to normal grounding,
+    # whose header tells the model to admit it could not find the passage.
+    r = sess.inspect("quote psalm 23")
+    assert r["mode"] == "normal"       # NOT a fabricated verbatim quote
+    v = sess.inspect("quote john 3:16")
+    assert v["mode"] == "normal"       # verse refs are positional too
+
+
+def test_quote_guard_allows_matching_passage(tmp_path):
+    sess = _bible_ish_session(tmp_path)
+    r = sess.inspect("quote the passage about the shepherd")
+    assert r["mode"] == "quote"                       # salient 'shepherd' matches
+    assert "shepherd" in (r["context"] or "").lower()  # the RIGHT verbatim bytes
+
+
 def test_ask_and_store_persists_both_messages(tmp_path):
     sess, _, store = _session(tmp_path)
     conv_id, answer = sess.ask_and_store(None, "what is in chapter one?")
