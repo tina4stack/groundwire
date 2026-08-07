@@ -51,3 +51,29 @@ packages = ["groundwire"]
 
 [tool.setuptools.package-data]
 groundwire = ["assets/*.png", "assets/*.ico", "webui/*"]
+
+# --------------------------------------------------------------------------- #
+# Briefcase — package the desktop app into a signed .dmg (macOS) / .msi (Win). #
+# The bundle runs `python -m gwapp`, a thin launcher for groundwire.desktop    #
+# (groundwire's own __main__ is the CLI harness). See docs/PACKAGING.md.       #
+# --------------------------------------------------------------------------- #
+[tool.briefcase]
+project_name = "Groundwire"
+bundle = "com.tina4stack"
+version = "0.1.0"
+url = "https://github.com/tina4stack/groundwire"
+author = "Andre van Zuydam"
+author_email = "andrevanzuydam@gmail.com"
+license.file = "LICENSE"
+
+[tool.briefcase.app.gwapp]
+formal_name = "Groundwire"
+description = "Ground a chat model in your own source — retrieval + verification in front of the LLM, on your machine."
+sources = ["gwapp", "groundwire"]
+# Pin pywebview: Briefcase's bundle resolver otherwise pulls 3.4, whose start()
+# lacks the `icon=` kwarg desktop.py uses (TypeError at launch). 6.x matches dev.
+requires = ["pywebview==6.2.1", "pypdf", "keyring"]
+icon = "groundwire/assets/groundwire"
+
+[tool.briefcase.app.gwapp.macOS]
+requires = ["std-nslog~=1.0"]
