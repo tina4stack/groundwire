@@ -1,0 +1,96 @@
+name: release
+
+# Build the desktop installers with Briefcase. Windows .msi can only be built on
+# Windows, so CI is the way to produce it (you then Authenticode-sign it with
+# SimplySign). Artifacts are UNSIGNED — signing/notarization happens downstream:
+#   Windows -> SimplySign (Certum) on your Mac;  macOS -> Developer ID + notarize.
+# Run on demand (Actions ▸ release ▸ Run workflow) or by pushing a v* tag.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Briefcase
+        run: pip install briefcase
+      - name: Vendor proxy_tools wheel (pywebview 6.x dep is sdist-only; Briefcase installs --only-binary)
+        run: |
+          mkdir wheels
+          pip wheel proxy_tools --no-deps -w wheels
+      - name: Build unsigned .msi
+        env:
+          PIP_FIND_LINKS: ${{ github.workspace }}\wheels
+        run: |
+          briefcase create windows --no-input
+          briefcase build windows --no-input
+          briefcase package windows --no-input
+      - name: Checksum
+        shell: pwsh
+        run: |
+          Set-Location dist
+          $f = Get-ChildItem *.msi | Select-Object -First 1
+          "$((Get-FileHash $f -Algorithm SHA256).Hash.ToLower())  $($f.Name)" | Tee-Object SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: groundwire-windows-msi
+          path: |
+            dist/*.msi
+            dist/SHA256SUMS
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Briefcase
+        run: pip install briefcase
+      - name: Vendor proxy_tools wheel
+        run: |
+          mkdir -p wheels
+          pip wheel proxy_tools --no-deps -w wheels
+      - name: Build .dmg (ad-hoc; Developer ID sign + notarize downstream)
+        env:
+          PIP_FIND_LINKS: ${{ github.workspace }}/wheels
+        run: |
+          briefcase create macOS --no-input
+          briefcase build macOS --no-input
+          briefcase package macOS --adhoc-sign --no-input
+      - name: Checksum
+        run: |
+          cd dist
+          shasum -a 256 *.dmg | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: groundwire-macos-dmg
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Attach installers to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Groundwire ${GITHUB_REF_NAME}" --generate-notes \
+            $(find artifacts -type f)

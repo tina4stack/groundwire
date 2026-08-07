@@ -77,3 +77,7 @@ icon = "groundwire/assets/groundwire"
 
 [tool.briefcase.app.gwapp.macOS]
 requires = ["std-nslog~=1.0"]
+
+[tool.briefcase.app.gwapp.windows]
+# pywebview's Windows (WebView2/WinForms) backend needs pythonnet.
+requires = ["pythonnet>=3.0.0"]
