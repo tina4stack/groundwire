@@ -77,8 +77,12 @@ _DIV_GENERIC = frozenset(
     "the of a an book books gospel gospels epistle epistles letter letters gene "
     "first second third fourth fifth general according saint st prophet prophets "
     "called moses testament old new gener".split())
-# a positional reference in a query: "<name> <chapter>[:<verse>]"
-_POS_REF = re.compile(r"\b([a-z][a-z]+)\s+(\d+)(?:\s*[:.]\s*(\d+))?\b", re.I)
+# a positional reference in a query: "<name> <chapter>[:<verse>]". The separator
+# between name and chapter is optional, so "psalm 23", "psalm23", "psalm-23" and
+# "psalm.23" all match. Harmless if the name isn't a real division (no match ->
+# no context), since _match_division only resolves to registered divisions.
+_POS_REF = re.compile(
+    r"\b([a-z][a-z]+)\s*[.:_-]?\s*(\d+)(?:\s*[:.]\s*(\d+))?\b", re.I)
 
 
 def _to_int(tok: str):

@@ -194,3 +194,13 @@ def test_verse_level_reference():
 def test_unmatched_division_does_not_resolve():
     reg = _numreg()
     assert not reg.resolve("quote leviticus 5")        # no such division here
+
+
+def test_glued_and_punctuated_positional_forms():
+    reg = _numreg()
+    for q in ("psalm23", "Psalm23", "psalm-23", "psalm.23", "psalm 23"):
+        cands = reg.resolve(q)
+        assert cands, f"{q!r} should resolve"
+        assert "psalms ch23 v1" in reg.text_of(cands[0][0]), q
+    # a name that isn't a division must NOT resolve, even glued
+    assert not reg.resolve("python3 tutorial")
