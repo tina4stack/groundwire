@@ -62,6 +62,20 @@ def test_read_turn_injects_the_span_text(tmp_path):
     assert fb.seen[-1][1] and "num_ctx" in fb.seen[-1][1]     # context grown to fit
 
 
+def test_inspect_reports_injected_context_without_calling_model(tmp_path):
+    sess, fb, _ = _session(tmp_path)
+    before = len(fb.seen)
+    r = sess.inspect("what is in the first chapter body?")
+    assert len(fb.seen) == before                 # model was NOT called
+    assert r["mode"] == "normal"
+    assert "ALPHA_ONE" in r["context"]            # the actual injected chunk text
+    assert any(s["source"] for s in r["sources"])  # auditable sources
+
+    q = sess.inspect("quote the full text of chapter 2")
+    assert q["mode"] == "quote"
+    assert "BETA_TWO" in q["context"]             # the verbatim bytes that fill in
+
+
 def test_ask_and_store_persists_both_messages(tmp_path):
     sess, _, store = _session(tmp_path)
     conv_id, answer = sess.ask_and_store(None, "what is in chapter one?")

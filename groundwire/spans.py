@@ -153,9 +153,10 @@ class SpanRegistry:
                         for i, (s, e) in enumerate(big)]
         return [("(document)", text)] if text.strip() else []
 
-    def build_from_folder(self, watch_dir: str):
+    def build_from_folder(self, watch_dir: str, prefix: str = "drop"):
         """Register every ingestable file under a folder (mirrors ingest_repo's
-        file selection, including Word/PDF extraction)."""
+        file selection, including Word/PDF extraction). `prefix` scopes the file
+        titles (match ingest_repo's prefix so span sources == retrieval sources)."""
         from .extract import extract_text, EXTRACT_EXTS
         SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv"}
         for dp, dns, fns in os.walk(watch_dir):
@@ -163,7 +164,7 @@ class SpanRegistry:
             for fn in sorted(fns):
                 ext = os.path.splitext(fn)[1].lower()
                 path = os.path.join(dp, fn)
-                title = "drop/" + os.path.relpath(path, watch_dir).replace("\\", "/")
+                title = f"{prefix}/" + os.path.relpath(path, watch_dir).replace("\\", "/")
                 try:
                     if ext in EXTRACT_EXTS:
                         text = extract_text(path)

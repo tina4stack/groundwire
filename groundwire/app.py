@@ -2,16 +2,17 @@
 The chat Session -- groundwire owning the before/after of every turn.
 
 This is the load-bearing core the desktop app sits on. Per turn it:
-  BEFORE  build the index over SANCTIONED paths, retrieve, and route the request
-          (normal / quote / read / whole-book map-reduce), splicing the right
-          context or span-offer into the messages;
+  BEFORE  retrieve over SANCTIONED paths and route the request (normal / quote /
+          read / whole-book map-reduce), splicing the right context or
+          span-offer into the messages;
   DISPATCH stream the chat through the SELECTED backend (local Ollama or cloud);
   AFTER   post-fill [[SPAN:…]] handles with verbatim bytes, append the audit
           footer, and persist the turn (with provenance) to history.
 
-The backend is injected, so the whole pipeline unit-tests with a fake model and
-no network. Streaming turns yield text deltas; turns that need the whole answer
-(quote / map-reduce) buffer, post-process, then yield.
+Two indexes are cached: a FULL one and a CLOUD-SAFE one (local-only paths
+withheld). A turn picks by backend type, so selecting a cloud model never ships
+a folder marked local-only -- and nothing is reindexed per request. The backend
+is injected, so the whole pipeline unit-tests with a fake model and no network.
 """
 from __future__ import annotations
 
@@ -29,102 +30,149 @@ class Session:
         self.backends = backends              # name -> Backend
         self.default_backend = default_backend
         self.k = k
-        self.mem = None
-        self.spans = SpanRegistry()
+        self._full = (None, SpanRegistry())   # (mem, spans) over all paths
+        self._cloud = (None, SpanRegistry())  # (mem, spans) minus local-only
         self.reindex()
 
-    # -- build the index over the sanctioned allowlist ----------------------- #
-    def reindex(self, cloud: bool = False):
-        """Rebuild retrieval index + span registry from enabled sanctioned
-        paths. `cloud=True` withholds local-only paths (privacy guard)."""
+    # -- build the indexes over the sanctioned allowlist --------------------- #
+    def _build(self, cloud: bool):
         from .pipeline import Groundwire
         mem = Groundwire(memory="sqlite_fts", k=self.k)
         spans = SpanRegistry()
         for p in self.store.paths_for(cloud=cloud):
             if os.path.isdir(p["path"]):
                 mem.ingest_repo(p["path"], prefix=p["scope"])
-                spans.build_from_folder(p["path"])
-        self.mem, self.spans = mem, spans
+                spans.build_from_folder(p["path"], prefix=p["scope"])
+        return mem, spans
+
+    def reindex(self):
+        """Rebuild both indexes. Call after the sanctioned paths change (not per
+        turn)."""
+        self._full = self._build(cloud=False)
+        self._cloud = self._build(cloud=True)
         return self
 
-    def _is_cloud(self, backend: Backend) -> bool:
-        return isinstance(backend, OpenAICompatBackend)
+    def _index_for(self, backend: Backend):
+        return self._cloud if isinstance(backend, OpenAICompatBackend) else self._full
 
     # -- one turn (a generator of text deltas) ------------------------------- #
     def turn(self, conv_id, user_text: str, backend_name: str = None):
         backend = self.backends[backend_name or self.default_backend]
-        # cloud selected -> reindex without local-only paths, so they never ship
-        if self._is_cloud(backend):
-            self.reindex(cloud=True)
-
+        mem, spans = self._index_for(backend)
         history = []
         if conv_id:
             conv = self.store.get_conversation(conv_id)
             history = [{"role": m["role"], "content": m["content"]}
                        for m in (conv["messages"] if conv else [])]
         msgs = history + [{"role": "user", "content": user_text}]
+        yield from self._route(user_text, msgs, backend, mem, spans)
 
-        for piece in self._route(user_text, msgs, backend):
-            yield piece
-
-    def _route(self, q, msgs, backend):
-        cands = self.spans.resolve(q)
+    def _plan(self, q, msgs, mem, spans):
+        """Decide the turn and build exactly what gets injected -- WITHOUT
+        calling the model. Returns a plan dict that both _execute() (dispatch)
+        and inspect() (audit) consume, so what you inspect is byte-identical to
+        what runs."""
+        cands = spans.resolve(q)
 
         # 1) READ a located span (summarize/explain chapter N): inject its text
         if cands and READ_INTENT.search(q):
             h, label = cands[0]
-            num_ctx = min(P.READ_MAX_CTX, len((self.spans.text_of(h) or "")) // 4 + 1200)
-            text = self.spans.text_of(h, cap_chars=(num_ctx - 1000) * 4)
-            sysmsg = P.CONTEXT_HEADER + f"[{label}]\n{text}\n=== END CONTEXT ==="
-            src = [(self.spans.source_of(h), label.split(" of ")[0], 0.0)]
-            yield from self._stream([{"role": "system", "content": sysmsg}] + msgs,
-                                    backend, footer=src, num_ctx=num_ctx)
-            return
+            num_ctx = min(P.READ_MAX_CTX, len((spans.text_of(h) or "")) // 4 + 1200)
+            text = spans.text_of(h, cap_chars=(num_ctx - 1000) * 4)
+            ctx = P.CONTEXT_HEADER + f"[{label}]\n{text}\n=== END CONTEXT ==="
+            return {"mode": "read", "context": ctx, "num_ctx": num_ctx,
+                    "messages": [{"role": "system", "content": ctx}] + msgs,
+                    "sources": [(spans.source_of(h), label.split(" of ")[0], 0.0)]}
 
         # 2) whole-file map-reduce ("summarize the whole book")
         if READ_INTENT.search(q) and not cands:
-            src = self.spans.resolve_whole(q)
-            if src and len(self.spans.texts.get(src, "")) > (P.READ_MAX_CTX - 1200) * 4:
-                yield from self._map_reduce(q, src, backend)
-                return
+            src = spans.resolve_whole(q)
+            if src and len(spans.texts.get(src, "")) > (P.READ_MAX_CTX - 1200) * 4:
+                segs = spans.coarse_segments(src)
+                return {"mode": "mapreduce", "mapreduce_src": src, "messages": msgs,
+                        "context": f"(map-reduce over {len(segs)} segments of {src})",
+                        "sources": [(src, "map-reduce", 0.0)]}
 
         # 3) QUOTE verbatim (structural or content anchor): offer a handle, fill
         if QUOTE_INTENT.search(q):
-            if not cands and self.mem is not None and self.mem._next:
-                hits = self.mem.retrieve(q, k=1)
+            if not cands and mem is not None and mem._next:
+                hits = mem.retrieve(q, k=1)
                 if hits:
                     cid, text, _ = hits[0]
-                    lbl = f"the passage matching your request (from {self.mem.source_of(cid) or '?'})"
-                    cands = [(self.spans.register_text_span(lbl, text), lbl)]
+                    lbl = f"the passage matching your request (from {mem.source_of(cid) or '?'})"
+                    cands = [(spans.register_text_span(lbl, text), lbl)]
             if cands:
-                offer = self.spans.offer(cands)
                 fallback = cands[0][0]
-                # buffer, post-fill the handle with verbatim bytes
-                whole = "".join(backend.chat(
-                    [{"role": "system", "content": offer}] + msgs, stream=False))
-                filled = self.spans.fill(whole)
-                if filled == whole:                       # model fumbled the handle
-                    span = self.spans.text_of(fallback)
-                    if span:
-                        filled = (whole.rstrip() + "\n\n" + span) if whole.strip() else span
-                yield filled
-                return
+                return {"mode": "quote", "offer": spans.offer(cands),
+                        "fallback": fallback,
+                        "context": spans.text_of(fallback),   # the verbatim bytes
+                        "messages": [{"role": "system", "content": spans.offer(cands)}] + msgs,
+                        "sources": [(spans.source_of(fallback) or "?",
+                                     cands[0][1].split(" of ")[-1], 0.0)]}
 
-        # 4) normal: retrieve top-k, inject as grounding context, stream through
-        block, sources = self._retrieve_block(q)
-        send = ([{"role": "system", "content": block}] + msgs) if block else msgs
-        yield from self._stream(send, backend, footer=sources)
+        # 4) normal: retrieve top-k, inject as grounding context
+        block, sources = self._retrieve_block(q, mem)
+        return {"mode": "normal", "context": block,
+                "messages": ([{"role": "system", "content": block}] + msgs)
+                            if block else msgs, "sources": sources}
+
+    def _execute(self, plan, backend):
+        mode = plan["mode"]
+        if mode == "mapreduce":
+            yield from self._map_reduce_plan(plan, backend)
+        elif mode == "quote":
+            spans = None  # spans captured via plan; fill happens on the string
+            whole = "".join(backend.chat(plan["messages"], stream=False))
+            filled = self._fill_quote(whole, plan)
+            yield filled
+        else:  # read / normal
+            yield from self._stream(plan["messages"], backend,
+                                    footer=plan.get("sources"),
+                                    num_ctx=plan.get("num_ctx"))
+
+    def _route(self, q, msgs, backend, mem, spans):
+        plan = self._plan(q, msgs, mem, spans)
+        # quote/map-reduce need the live registry to fill/segment
+        plan["_spans"] = spans
+        yield from self._execute(plan, backend)
+
+    def _fill_quote(self, whole, plan):
+        spans = plan["_spans"]
+        filled = spans.fill(whole)
+        if filled == whole and plan.get("fallback"):     # model fumbled the handle
+            span = spans.text_of(plan["fallback"])
+            if span:
+                filled = (whole.rstrip() + "\n\n" + span) if whole.strip() else span
+        return filled
+
+    def _map_reduce_plan(self, plan, backend):
+        yield from self._map_reduce(plan["messages"][-1]["content"],
+                                    plan["mapreduce_src"], backend, plan["_spans"])
+
+    # -- audit: exactly what WOULD be injected, no model call ----------------- #
+    def inspect(self, user_text: str, backend_name: str = None):
+        """Return {mode, context, sources} for a query -- the real injected
+        context, built by the same _plan() the turn uses, but the model is never
+        called. This is how 'is the injected context accurate?' is answered by
+        looking, not trusting."""
+        backend = self.backends.get(backend_name or self.default_backend)
+        mem, spans = self._index_for(backend) if backend else self._full
+        plan = self._plan(user_text, [{"role": "user", "content": user_text}],
+                          mem, spans)
+        srcs = [{"source": s[0], "ref": s[1]} for s in plan.get("sources", [])]
+        return {"mode": plan["mode"], "context": plan.get("context") or "",
+                "sources": srcs}
 
     # -- helpers ------------------------------------------------------------- #
-    def _retrieve_block(self, q):
-        if self.mem is None or not self.mem._next:
+    def _retrieve_block(self, q, mem):
+        if mem is None or not mem._next:
             return None, []
-        hits = self.mem.retrieve(q, k=self.k)
+        hits = mem.retrieve(q, k=self.k)
         if not hits:
             return None, []
         parts, sources = [], []
         for cid, text, score in hits:
-            s = self.mem.source_of(cid)
+            s = mem.source_of(cid)
             parts.append(f"[{s}]\n{text}" if s else text)
             sources.append((s or str(cid), cid, score))
         return P.CONTEXT_HEADER + "\n\n---\n\n".join(parts) + "\n=== END CONTEXT ===", sources
@@ -136,26 +184,23 @@ class Session:
         if footer:
             yield P.sources_footer(footer)
 
-    def _map_reduce(self, q, src, backend):
-        segments = self.spans.coarse_segments(src)
+    def _map_reduce(self, q, src, backend, spans):
+        segments = spans.coarse_segments(src)
         budget = (P.READ_MAX_CTX - 1200) * 4
         yield f"Summarizing {src} in {len(segments)} parts…\n\n"
         prog = []
         def call_llm(prompt):
             return backend.complete([{"role": "user", "content": prompt}],
                                     options={"num_ctx": P.READ_MAX_CTX})
-        # progress is emitted between segments via the callback buffer
-        result = {}
-        def on_progress(m):
-            prog.append(f"▸ {m}\n")
-        final = summarize(call_llm, segments, budget, q, on_progress=on_progress)
+        final = summarize(call_llm, segments, budget, q,
+                          on_progress=lambda m: prog.append(f"▸ {m}\n"))
         for line in prog:
             yield line
         yield "\n" + final + f"\n\n— groundwire ▸ map-reduce summary of {src}"
 
     # -- persistence convenience -------------------------------------------- #
-    def ask_and_store(self, conv_id, user_text, backend_name=None) -> str:
-        """Run a turn to completion, persist both messages, return the answer."""
+    def ask_and_store(self, conv_id, user_text, backend_name=None):
+        """Run a turn to completion, persist both messages, return (id, answer)."""
         if conv_id is None:
             conv_id = self.store.new_conversation(user_text[:60], backend_name
                                                   or self.default_backend)
