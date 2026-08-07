@@ -37,13 +37,13 @@ jobs:
         run: |
           Set-Location dist
           $f = Get-ChildItem *.msi | Select-Object -First 1
-          "$((Get-FileHash $f -Algorithm SHA256).Hash.ToLower())  $($f.Name)" | Tee-Object SHA256SUMS
+          "$((Get-FileHash $f -Algorithm SHA256).Hash.ToLower())  $($f.Name)" | Tee-Object SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v4
         with:
           name: groundwire-windows-msi
           path: |
             dist/*.msi
-            dist/SHA256SUMS
+            dist/SHA256SUMS-windows.txt
 
   macos:
     runs-on: macos-latest
@@ -68,13 +68,13 @@ jobs:
       - name: Checksum
         run: |
           cd dist
-          shasum -a 256 *.dmg | tee SHA256SUMS
+          shasum -a 256 *.dmg | tee SHA256SUMS-macos.txt
       - uses: actions/upload-artifact@v4
         with:
           name: groundwire-macos-dmg
           path: |
             dist/*.dmg
-            dist/SHA256SUMS
+            dist/SHA256SUMS-macos.txt
 
   release:
     # v1.2.3 -> attach to a Release; v1.2.3-test/-rc (contains '-') -> build only
