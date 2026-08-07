@@ -80,6 +80,8 @@ class Handler(BaseHTTPRequestHandler):
         p, app = self.path.split("?", 1)[0], self.APP
         if p in ("/", "/index.html"):
             return self._static("index.html")
+        if p == "/favicon.ico":
+            return self._static("groundwire-64.png")
         if p.startswith("/static/"):
             return self._static(p[len("/static/"):])
         if p == "/api/models":
