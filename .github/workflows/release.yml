@@ -77,7 +77,8 @@ jobs:
             dist/SHA256SUMS
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    # v1.2.3 -> attach to a Release; v1.2.3-test/-rc (contains '-') -> build only
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     needs: [windows, macos]
     runs-on: ubuntu-latest
     permissions:
