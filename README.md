@@ -200,6 +200,20 @@ stdlib). Set `GROUNDWIRE_VERIFIED_RANK=0` for a clean A/B baseline.
 
 ## Experimental
 
+## Desktop app
+
+A native chat app that **owns every turn** — retrieving over your sanctioned
+folders before the model answers and post-filling verbatim spans after — while
+talking to a local Ollama model or a cloud model:
+
+```bash
+pip install -e ".[desktop]"
+python -m groundwire.desktop            # native window (WKWebView / WebView2)
+```
+
+Architecture, routing, Mac setup, and status: **[docs/APP.md](docs/APP.md)**.
+Building signed installers: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
+
 Not part of the tested core; useful but rougher: `groundwire.proxy` (a transparent
 drop-in Ollama proxy that injects retrieved context into every request),
 `groundwire.server` (an OpenAI-compatible proxy with an import verify-and-correct
