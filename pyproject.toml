@@ -31,6 +31,7 @@ qwen = ["transformers", "torch", "accelerate"]  # optional local reader only
 mcp = ["tina4-python"]                           # experimental MCP server (built on Tina4)
 docs = ["pypdf"]                                 # index PDFs in the drop folder (.docx is stdlib)
 app = ["pystray", "pillow", "pypdf"]             # experimental desktop tray + drop-folder ingest
+desktop = ["pywebview", "pypdf", "keyring"]      # native-window app (webview UI + chat/backends)
 
 [project.urls]
 Homepage = "https://github.com/tina4stack/groundwire"
@@ -42,9 +43,11 @@ groundwire-bench = "groundwire.harness:main"             # long-context NIAH rec
 groundwire-server = "groundwire.server:main"             # experimental OpenAI-compat proxy
 groundwire-mcp = "groundwire.mcp_server:main"            # experimental Tina4-stack MCP server
 groundwire-proxy = "groundwire.proxy:main"               # experimental drop-in Ollama proxy
+groundwire-web = "groundwire.webapp:main"                # web UI + chat API (browser)
+groundwire-app = "groundwire.desktop:main"               # native desktop window (webview UI)
 
 [tool.setuptools]
 packages = ["groundwire"]
 
 [tool.setuptools.package-data]
-groundwire = ["assets/*.png", "assets/*.ico"]
+groundwire = ["assets/*.png", "assets/*.ico", "webui/*"]
