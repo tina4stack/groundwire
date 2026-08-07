@@ -204,3 +204,16 @@ def test_glued_and_punctuated_positional_forms():
         assert "psalms ch23 v1" in reg.text_of(cands[0][0]), q
     # a name that isn't a division must NOT resolve, even glued
     assert not reg.resolve("python3 tutorial")
+
+
+def test_non_monotonic_colon_data_is_not_addressable():
+    """Sports scores / ratios / clock times use 'N:M' but jump around -- they
+    must NOT be mistaken for a numbered book, or 'results 3' would 'quote' a row."""
+    res = [(1,1),(2,1),(3,0),(2,2),(1,1),(4,2),(3,3),(0,0),(2,1),(1,0),
+           (3,1),(2,0),(1,2),(5,1),(2,2),(1,1),(3,2),(0,1),(4,4),(2,3),(1,1),(3,0)]
+    scores = "League Results\n\n" + "\n".join(
+        f"{h}:{a} home {h} away {a} match report." for h, a in res)
+    reg = SpanRegistry().register_file("lib/scores.txt", scores)
+    assert "lib/scores.txt" not in reg.numbered          # not detected as a book
+    assert not reg.resolve("results 3")                  # nothing to quote
+    assert not reg.resolve("league 3")

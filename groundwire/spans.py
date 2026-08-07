@@ -156,9 +156,12 @@ class SpanRegistry:
         if not starts:
             return
         divs = []
+        kept_verses = 0
         for si, vi in enumerate(starts):
             v_end = starts[si + 1] if si + 1 < len(starts) else len(verses)
             div_verses = verses[vi:v_end]
+            if not self._monotonic(div_verses):
+                continue                    # scores/ratios/times: not a real book
             first_pos = div_verses[0][0]
             end_pos = (verses[v_end][0] if v_end < len(verses) else len(text))
             name = self._name_above(text, first_pos)
@@ -178,8 +181,22 @@ class SpanRegistry:
             divs.append({"name": name, "keys": keys, "primary": primary,
                          "chapters": {c: tuple(r) for c, r in chapters.items()},
                          "verses": vspans})
-        if divs:
+            kept_verses += len(div_verses)
+        # only a corpus with enough genuinely book-structured verses counts
+        if divs and kept_verses >= _MIN_VERSES:
             self.numbered[title] = divs
+
+    @staticmethod
+    def _monotonic(div_verses) -> bool:
+        """A real numbered book: chapters never go backwards and verses never go
+        backwards within a chapter. Random 'N:M' data -- sports scores, ratios,
+        clock times -- violates this, so it is NOT treated as addressable text."""
+        pc = pv = 0
+        for _, _, c, v in div_verses:
+            if c < pc or (c == pc and v < pv):
+                return False
+            pc, pv = c, v
+        return True
 
     @staticmethod
     def _name_above(text: str, pos: int) -> str:
