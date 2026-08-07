@@ -217,3 +217,49 @@ def test_non_monotonic_colon_data_is_not_addressable():
     assert "lib/scores.txt" not in reg.numbered          # not detected as a book
     assert not reg.resolve("results 3")                  # nothing to quote
     assert not reg.resolve("league 3")
+
+
+# --- label-aware structural refs (article/section nesting, roman, inline body) --
+def _legal():
+    parts = []
+    for a in ("I", "II"):                                # Article > Section
+        parts.append(f"Article {a}.")
+        for s in range(1, 9):                            # Sections 1..8
+            parts.append(f"Section {s}. provision for article {a} section {s} "
+                         + "lorem ipsum dolor sit amet " * 20)
+    return SpanRegistry().register_file("lib/code.txt", "\n\n".join(parts))
+
+
+def test_bare_section_uses_printed_label_not_position():
+    reg = _legal()
+    c = reg.resolve("section 8")           # NOT the 8th marker -> the labelled S8
+    assert c and "article I section 8" in reg.text_of(c[0][0])
+    # inline body on the header line is captured in full (not dropped as a stub)
+    assert reg.text_of(c[0][0]).lstrip().startswith("Section 8.")
+
+
+def test_nested_reference_scopes_to_parent():
+    reg = _legal()
+    c = reg.resolve("article 2 section 8")           # Section 8 INSIDE Article II
+    assert c and "article II section 8" in reg.text_of(c[0][0])
+    # order-independent: "section 8 of article 2" means the same
+    c2 = reg.resolve("section 8 of article 2")
+    assert c2 and "article II section 8" in reg.text_of(c2[0][0])
+
+
+def test_roman_and_word_labels_and_amendments():
+    body = "rights retained by the people " * 25
+    text = ("Amendment I.\n\n" + body
+            + "\n\nAmendment II.\n\n" + body
+            + "\n\nAmendment XIV.\n\n" + "equal protection of the laws " * 25)
+    reg = SpanRegistry().register_file("lib/bill.txt", text)
+    assert reg.resolve("amendment 14")               # arabic
+    assert reg.resolve("amendment xiv")              # roman -> 14
+
+
+def test_single_sequence_sonnet():
+    text = "\n\n".join(f"Sonnet {n}\n\nverse for sonnet {n} " + "beauty truth " * 40
+                       for n in range(1, 31))
+    reg = SpanRegistry().register_file("lib/sonnets.txt", text)
+    c = reg.resolve("sonnet 18")
+    assert c and "verse for sonnet 18" in reg.text_of(c[0][0])

@@ -21,8 +21,8 @@ from __future__ import annotations
 import os
 import re
 
-# structural markers: CHAPTER/CANTO/BOOK/PART/LETTER + a number, each on its own
-# line (Gutenberg/plain-text convention), and Markdown headings. The number may
+# structural markers: a division word + a number, each on its own line
+# (Gutenberg/plain-text/legal convention), and Markdown headings. The number may
 # be arabic, roman, OR a spelled-out word/ordinal ("BOOK ONE", "PART SECOND") --
 # classic novels number their top-level divisions in words.
 _NUMWORD = (
@@ -32,8 +32,21 @@ _NUMWORD = (
     r"nineteen|eighteen|seventeen|sixteen|fifteen|fourteen|thirteen|twelve|"
     r"eleven|twenty|thirty|forty|fifty|ten|nine|eight|seven|six|five|four|"
     r"three|two|one")
+# the division words we recognise, and their OUTLINE LEVEL (higher = outer). A
+# unit's body runs until the next marker at the same-or-higher level, so a
+# section ends at the next section OR the enclosing article, and a scene at the
+# next scene OR the enclosing act. This is what makes "section 8" the LABELLED
+# Section 8 (and "act 2 scene 3" nest) rather than the 8th marker in the file.
+_LEVEL = {
+    "volume": 6, "book": 6, "title": 6,
+    "part": 5, "article": 5, "amendment": 5,
+    "chapter": 4, "canto": 4, "act": 4, "letter": 4, "sonnet": 4,
+    "section": 3, "scene": 3, "rule": 3,
+    "stanza": 2, "clause": 2,
+}
+_UNITS = "|".join(_LEVEL)
 _STRUCT = re.compile(
-    r"(?mi)^[ \t]*(chapter|canto|book|part|letter|section)\s+"
+    r"(?mi)^[ \t]*(" + _UNITS + r")\s+"
     r"([ivxlcdm]+|\d+|(?:" + _NUMWORD + r"))\b.*$")
 _MD_HEADING = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$")
 
@@ -41,10 +54,11 @@ _OPEN = re.compile(
     r"\b(start|starts|begin|begins|beginning|open|opening|"
     r"first (?:lines|words|paragraph|sentence))\b", re.I)
 _FULL = re.compile(r"\b(full|entire|whole|complete|all of)\b", re.I)
-# capture BOTH the unit word and the number, so "chapter 2" counts only chapter
-# markers -- not the interleaved BOOK/PART markers.
+# a structural reference in a query: "<unit> <number>" (arabic/roman/word). More
+# than one may appear ("article 1 section 8", "act 2 scene 3") -- the innermost
+# (lowest-level) is the target, the outer ones scope it.
 _CHAP_REF = re.compile(
-    r"\b(chapter|canto|part|book|section)\s+(\d+|[ivxlcdm]+)\b", re.I)
+    r"\b(" + _UNITS + r")\s+(\d+|[ivxlcdm]+|(?:" + _NUMWORD + r"))\b", re.I)
 # "summarize the whole book / entire document / all of it"
 _WHOLE = re.compile(r"\b(whole|entire|complete|all of|the book|the novel|"
                     r"the document|the text|everything)\b", re.I)
@@ -113,6 +127,7 @@ class SpanRegistry:
         self.rawmarks = {}       # source -> [(pos, unit_type), ...] all markers
         self.spans = {}          # handle -> (source, start, end, label)
         self.numbered = {}       # source -> [division dicts] (colon-numbered)
+        self.structure = {}      # source -> [marker dicts] (label-aware outline)
 
     def clear(self):
         self.__init__()
@@ -138,8 +153,46 @@ class SpanRegistry:
             by_type.setdefault(typ, []).append((hend, nxt))  # body after heading
         if by_type:
             self.units[title] = by_type
+        self._index_structure(title, text)
         self._index_numbered(title, text)
         return self
+
+    # -- label-aware structural outline (chapter/section/article/act/scene...) - #
+    def _index_structure(self, title: str, text: str):
+        """Record every structural marker with its PRINTED label and outline
+        level, plus the byte span whose body runs to the next same-or-higher
+        marker. This is what lets 'section 8' mean the labelled Section 8 and
+        'act 2 scene 3' nest -- rather than counting markers positionally."""
+        raw = []
+        for m in _STRUCT.finditer(text):
+            typ = m.group(1).lower()
+            # text on the SAME line after the number ("Section 8. The Congress...")
+            # is inline body -> keep it; a bare header line ("CHAPTER III") is not.
+            inline = len(text[m.end(2):m.end()].strip(" .:-)\t")) >= 20
+            raw.append({"type": typ, "label": _to_int(m.group(2)),
+                        "hstart": m.start(), "bstart": m.end(),
+                        "start": m.start() if inline else m.end(),
+                        "level": _LEVEL.get(typ, 4)})
+        if not raw:                                  # fall back to Markdown headings
+            raw = [{"type": "heading", "label": None, "hstart": m.start(),
+                    "bstart": m.end(), "start": m.end(), "level": 7 - len(m.group(1)),
+                    "text": m.group(2)}
+                   for m in _MD_HEADING.finditer(text)]
+        if not raw:
+            return
+        n = len(text)
+        kept = []
+        for i, mk in enumerate(raw):
+            end = n
+            for j in range(i + 1, len(raw)):
+                if raw[j]["level"] >= mk["level"]:   # sibling or outer boundary
+                    end = raw[j]["hstart"]; break
+            mk["bend"] = end
+            # measure from the span START (which already accounts for inline body)
+            if end - mk["start"] >= _MIN_BODY:        # else a TOC / stub entry
+                kept.append(mk)
+        if kept:
+            self.structure[title] = kept
 
     # -- colon-numbered division index (bible/legal/spec addressing) ---------- #
     def _index_numbered(self, title: str, text: str):
@@ -293,17 +346,8 @@ class SpanRegistry:
         q = question.lower()
         out, seen = [], set()
         opening = bool(_OPEN.search(q)) and not _FULL.search(q)
-        for m in _CHAP_REF.finditer(q):
-            unit, num = m.group(1).lower(), _to_int(m.group(2))
-            src = self._pick_source(q, unit)
-            ranges = self.units.get(src, {}).get(unit) if src else None
-            if not num or not ranges or num > len(ranges):
-                continue
-            start, end = ranges[num - 1]
-            label = (f"the opening of {unit} {num} of {src}" if opening
-                     else f"{unit} {num} of {src}")
-            slug = f"{unit}-{num}" + ("-open" if opening else "")
-            h, lab = self._materialize(src, start, end, slug, label, opening)
+        # label-aware structural refs ("chapter 2", "article 1 section 8", ...)
+        for h, lab in self.resolve_structural(question, opening):
             if h not in seen:
                 seen.add(h)
                 out.append((h, lab))
@@ -322,6 +366,56 @@ class SpanRegistry:
                 out.append(self._materialize(src, start, end, "opening",
                                              f"the opening of {src}", True))
         return out
+
+    def _pick_structural_source(self, q: str, unit: str):
+        """Which file has this unit type? A filename-stem token in the question
+        wins; else the only one; else the file with the most markers of it."""
+        have = [s for s in self.structure
+                if any(mk["type"] == unit for mk in self.structure[s])]
+        for src in have:
+            if any(t in q for t in _stem(src).split("_") if len(t) > 3):
+                return src
+        if len(have) == 1:
+            return have[0]
+        return max(have, key=lambda s: sum(mk["type"] == unit
+                   for mk in self.structure[s])) if have else None
+
+    def resolve_structural(self, question: str, opening: bool = False):
+        """Resolve a structural reference by its PRINTED label, honouring nesting.
+        'article 1 section 8' -> Section labelled 8 INSIDE Article 1; 'act 2 scene
+        3' -> that scene; 'section 8' alone -> the first Section 8. The innermost
+        (lowest outline level) reference is the target; outer ones scope it."""
+        refs = [(m.group(1).lower(), _to_int(m.group(2)))
+                for m in _CHAP_REF.finditer(question)]
+        refs = [(t, n) for t, n in refs if n]
+        if not refs:
+            return []
+        target = min(refs, key=lambda r: _LEVEL.get(r[0], 4))     # most specific
+        scope = [r for r in refs if r is not target
+                 and _LEVEL.get(r[0], 4) > _LEVEL.get(target[0], 4)]
+        unit, num = target
+        src = self._pick_structural_source(question.lower(), unit)
+        if not src:
+            return []
+        marks = self.structure[src]
+        lo, hi = 0, len(self.texts[src])
+        for pt, pn in scope:                                       # narrow to parent
+            par = next((mk for mk in marks if mk["type"] == pt and mk["label"] == pn
+                        and lo <= mk["hstart"] < hi), None)
+            if par:
+                lo, hi = par["hstart"], par["bend"]
+        hit = next((mk for mk in marks if mk["type"] == unit and mk["label"] == num
+                    and lo <= mk["hstart"] < hi), None)
+        if not hit:
+            return []
+        label = " ".join(f"{t} {n}" for t, n in scope + [target]) + f" of {src}"
+        slug = "-".join(f"{t}-{n}" for t, n in scope + [target])
+        if opening:
+            label = "the opening of " + label
+            slug += "-open"
+        # hit["start"] is the header line for inline-body sections ("Section 8.
+        # The Congress...") but the line AFTER a bare header ("CHAPTER III")
+        return [self._materialize(src, hit["start"], hit["bend"], slug, label, opening)]
 
     @staticmethod
     def _match_division(divs, name_tok: str):
