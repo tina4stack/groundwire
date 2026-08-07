@@ -115,6 +115,38 @@ def test_quote_guard_allows_matching_passage(tmp_path):
     assert "shepherd" in (r["context"] or "").lower()  # the RIGHT verbatim bytes
 
 
+def _numbered_session(tmp_path):
+    """A colon-numbered corpus (named divisions, chapter:verse) so a BARE
+    positional reference resolves to a real span."""
+    alpha = "\n".join(f"{c}:{v} alpha ch{c} v{v} lorem ipsum."
+                      for c in range(1, 4) for v in range(1, 9))
+    psalms = "\n".join(f"{c}:{v} psalms ch{c} v{v} green pastures."
+                       for c in range(1, 26) for v in range(1, 7))
+    folder = tmp_path / "lib"
+    folder.mkdir()
+    (folder / "scripture.txt").write_text(
+        f"The Book of Alpha\n\n{alpha}\n\nThe Book of Psalms\n\n{psalms}\n",
+        encoding="utf-8")
+    store = Store(str(tmp_path / "g.db"))
+    store.add_path(str(folder), "lib")
+    return Session(store, {"fake": FakeBackend()}, "fake")
+
+
+def test_bare_positional_reference_is_quoted(tmp_path):
+    sess = _numbered_session(tmp_path)
+    r = sess.inspect("psalm 23")               # bare -> show verbatim
+    assert r["mode"] == "quote"
+    assert "psalms ch23 v1" in (r["context"] or "")
+    assert sess.inspect("Psalm 23")["mode"] == "quote"    # case-insensitive
+
+
+def test_reference_inside_a_question_is_injected_not_quoted(tmp_path):
+    sess = _numbered_session(tmp_path)
+    r = sess.inspect("what happens in psalm 23")   # a question -> inject + answer
+    assert r["mode"] == "read"
+    assert "psalms ch23" in (r["context"] or "")   # the right passage injected
+
+
 def test_ask_and_store_persists_both_messages(tmp_path):
     sess, _, store = _session(tmp_path)
     conv_id, answer = sess.ask_and_store(None, "what is in chapter one?")

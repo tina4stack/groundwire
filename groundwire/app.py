@@ -21,7 +21,8 @@ import os
 import re
 
 from .backends import Backend, OpenAICompatBackend
-from .spans import SpanRegistry, QUOTE_INTENT, READ_INTENT, _NUMWORD
+from .spans import (SpanRegistry, QUOTE_INTENT, READ_INTENT, _NUMWORD,
+                    _POS_REF, _CHAP_REF)
 from .memory_systems import terms as _terms
 from .mapreduce import summarize
 from . import proxy as P                     # reuse CONTEXT_HEADER, footers, sizing
@@ -69,6 +70,24 @@ def _quote_hit_matches(q: str, doc: str) -> bool:
         return False
     dterms = set(_terms(doc))
     return any(t in dterms for t in salient)
+
+
+# Words that surround a bare reference without turning it into a question.
+_REF_FILLER = frozenset(
+    "show me give given please read see get want the a an of in on from to and "
+    "or book books chapter chapters verse verses section sections part parts "
+    "canto cantos psalm psalms sonnet sonnets act acts scene scenes stanza line "
+    "lines full whole complete entire text passage quote opening beginning start "
+    "starts begin begins".split())
+
+
+def _is_bare_reference(q: str) -> bool:
+    """True when the query is essentially JUST a structural reference ('psalm 23',
+    'chapter 5', 'canto iv') with no other question around it -- so we SHOW the
+    passage verbatim rather than answer a question about it. 'who dies in chapter
+    5' is NOT bare (it has 'who dies') and routes to inject-and-answer."""
+    rest = _CHAP_REF.sub(" ", _POS_REF.sub(" ", q.lower()))
+    return not [t for t in re.findall(r"[a-z]+", rest) if t not in _REF_FILLER]
 
 
 class Session:
@@ -120,9 +139,14 @@ class Session:
         and inspect() (audit) consume, so what you inspect is byte-identical to
         what runs."""
         cands = spans.resolve(q)
+        # a BARE reference ("psalm 23") is shown verbatim; the SAME reference
+        # inside a question ("what happens in chapter 5") is injected + answered.
+        bare = bool(cands) and _is_bare_reference(q)
 
-        # 1) READ a located span (summarize/explain chapter N): inject its text
-        if cands and READ_INTENT.search(q):
+        # 1) READ a located span (a question ABOUT chapter N -- explain/summarize/
+        #    who/why...): inject its text so the model reasons over it. Skipped
+        #    for a bare reference or an explicit quote (handled verbatim below).
+        if cands and not bare and not QUOTE_INTENT.search(q):
             h, label = cands[0]
             num_ctx = min(P.READ_MAX_CTX, len((spans.text_of(h) or "")) // 4 + 1200)
             text = spans.text_of(h, cap_chars=(num_ctx - 1000) * 4)
@@ -140,28 +164,28 @@ class Session:
                         "context": f"(map-reduce over {len(segs)} segments of {src})",
                         "sources": [(src, "map-reduce", 0.0)]}
 
-        # 3) QUOTE verbatim (structural or content anchor): offer a handle, fill
-        if QUOTE_INTENT.search(q):
-            if (not cands and mem is not None and mem._next
-                    and not _looks_positional(q)):
-                # CONTENT quote (no numbered/ordinal unit): take the top-ranked
-                # hit that ACTUALLY shares a salient term; never fabricate a
-                # verbatim quote from a non-match. A POSITIONAL quote we couldn't
-                # resolve structurally is deliberately NOT satisfied by search --
-                # it falls through to normal grounding instead.
-                for cid, text, _ in mem.retrieve(q, k=5):
-                    if _quote_hit_matches(q, text):
-                        lbl = f"the passage matching your request (from {mem.source_of(cid) or '?'})"
-                        cands = [(spans.register_text_span(lbl, text), lbl)]
-                        break
-            if cands:
-                fallback = cands[0][0]
-                return {"mode": "quote", "offer": spans.offer(cands),
-                        "fallback": fallback,
-                        "context": spans.text_of(fallback),   # the verbatim bytes
-                        "messages": [{"role": "system", "content": spans.offer(cands)}] + msgs,
-                        "sources": [(spans.source_of(fallback) or "?",
-                                     cands[0][1].split(" of ")[-1], 0.0)]}
+        # 3) QUOTE verbatim: an explicit quote verb runs a CONTENT-anchored
+        #    lexical fallback; a bare structural/positional reference ("psalm 23")
+        #    that already resolved is shown verbatim on its own.
+        if (QUOTE_INTENT.search(q) and not cands and mem is not None
+                and mem._next and not _looks_positional(q)):
+            # take the top-ranked hit that ACTUALLY shares a salient term; never
+            # fabricate a verbatim quote from a non-match. A POSITIONAL quote we
+            # couldn't resolve structurally is deliberately NOT satisfied by
+            # search -- it falls through to normal grounding instead.
+            for cid, text, _ in mem.retrieve(q, k=5):
+                if _quote_hit_matches(q, text):
+                    lbl = f"the passage matching your request (from {mem.source_of(cid) or '?'})"
+                    cands = [(spans.register_text_span(lbl, text), lbl)]
+                    break
+        if cands and (QUOTE_INTENT.search(q) or bare):
+            fallback = cands[0][0]
+            return {"mode": "quote", "offer": spans.offer(cands),
+                    "fallback": fallback,
+                    "context": spans.text_of(fallback),   # the verbatim bytes
+                    "messages": [{"role": "system", "content": spans.offer(cands)}] + msgs,
+                    "sources": [(spans.source_of(fallback) or "?",
+                                 cands[0][1].split(" of ")[-1], 0.0)]}
 
         # 4) normal: retrieve top-k, inject as grounding context
         block, sources = self._retrieve_block(q, mem)
