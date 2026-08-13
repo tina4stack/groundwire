@@ -623,3 +623,31 @@ class TestReadLoopPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestChatMemory(unittest.TestCase):
+    """Retrieved conversational memory (groundwire.ChatMemory)."""
+
+    def test_retrieves_relevant_turn_not_the_whole_log(self):
+        from groundwire import ChatMemory
+        m = ChatMemory(k=1)
+        m.add_turn("How do I open a FireDAC connection?",
+                   "Use TFDConnection.Connected := True")
+        m.add_turn("What is the capital of France?", "Paris")
+        m.add_turn("How do I free a TFileStream?", "Call Free")
+        ctx = m.context("and the FireDAC connection parameters?")
+        self.assertIn("TFDConnection", ctx)      # the relevant turn is retrieved
+        self.assertNotIn("Paris", ctx)           # the off-topic turn is not
+
+    def test_empty_history(self):
+        from groundwire import ChatMemory
+        m = ChatMemory()
+        self.assertEqual(m.retrieve("anything"), [])
+        self.assertEqual(m.context("anything"), "")
+        self.assertEqual(len(m), 0)
+
+    def test_add_turns_and_len_chain(self):
+        from groundwire import ChatMemory
+        m = ChatMemory(k=2).add_turns([("a?", "alpha"), ("b?", "beta")])
+        self.assertEqual(len(m), 2)
+        self.assertTrue(m.retrieve("alpha"))

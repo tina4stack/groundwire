@@ -12,6 +12,7 @@ top-k retrieved chunks reach the model. Part of the tina4stack.
 Distributed on PyPI as `tina4-groundwire`.
 """
 from .pipeline import Groundwire, chunk_text, chunk_code
+from .chat import ChatMemory
 
-__version__ = "0.1.0"
-__all__ = ["Groundwire", "chunk_text", "chunk_code", "__version__"]
+__version__ = "0.1.1"
+__all__ = ["Groundwire", "ChatMemory", "chunk_text", "chunk_code", "__version__"]
