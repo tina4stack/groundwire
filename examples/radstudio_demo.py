@@ -343,7 +343,7 @@ class H(BaseHTTPRequestHandler):
             q = (b.get("question") or "").strip()
             if not q:
                 return self._send(json.dumps({"error": "empty"}))
-            return self._send(json.dumps(answer(q)))
+            return self._send(json.dumps(answer(q, b.get("turns") or [])))
         if path == "/api/reindex":
             return self._send(json.dumps(reindex()))
         if path == "/api/upload":
