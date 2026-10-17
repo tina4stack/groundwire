@@ -26,6 +26,8 @@ groundwire/
                      #   InMemoryBM25, SqliteFTS (default), HashEmbedding,
                      #   DenseEncoderMemory, HybridRetriever, IterativeRetriever,
                      #   MultiQueryRetriever
+  temporal.py        # time-awareness: to_epoch, Hit (3-tuple + .at/.ts), apply_recency
+                     #   (multiplicative decay), supersede (latest-wins), as_of filter
   rerank.py          # DenseReranker: reorder a lexical pool by dense cosine,
                      #   query embedded once + candidates cached by id (no corpus
                      #   embedding, off-GPU). Wired via Groundwire(rerank="dense").
@@ -69,6 +71,14 @@ tests/     test_core.py  — stdlib unittest, network-free, deterministic core
 - **Neighbor-pull is code-only.** Prose must not stitch neighbors (`test_prose_not_pulled`).
 - **`retrieve()` scoping is a no-op on a single-repo index** by design; it only shapes
   multi-repo pools. Don't "fix" that.
+- **Temporal options are opt-in and must stay byte-identical when off.** Every chunk is
+  stamped (`Groundwire.times`, default now, `ingest_repo` = file mtime), but `retrieve()`
+  only widens its pool (k*6) and runs `_temporal()` when `recency`/`latest`/`as_of` is
+  set. Recency is MULTIPLICATIVE (relevance x (1-w + w*decay)) so freshness can never lift
+  an irrelevant chunk; untimed chunks (pre-timestamp snapshots) count as very old and never
+  displace timed ones. Hits are `temporal.Hit` -- a tuple subclass, so `cid, text, score =
+  h` still works; don't change the arity. Verified off == main by hashing retrieve() over
+  the 30-Q tina4 eval x {sqlite_fts,bm25,hybrid} x k{1,5}. Tests: `tests/test_temporal.py`.
 - **Persistence is data, not GPU state** — `save()`/`load()` snapshot the index; round-trips
   must reproduce identical retrieval (`test_save_load_roundtrip`).
 

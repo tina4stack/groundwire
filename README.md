@@ -190,6 +190,41 @@ recall (a reader extracts the value), and throughput (ingest tok/s, query latenc
 Encoder specs: `ollama:MODEL`, `openai:MODEL` (any OpenAI-compatible endpoint incl.
 vLLM/Azure), `hash:DIM` (offline). Config via `EMBED_URL` / `EMBED_MODEL`.
 
+## Time-aware retrieval
+
+Relevance on its own doesn't know what day it is. When an old fact and its replacement
+both match, plain `retrieve()` will hand back whichever scores higher, so every chunk now
+carries the time it was recorded, and three opt-in options will put that time to work.
+
+```python
+from datetime import datetime
+gw.ingest("The office is in Durban.", title="hr", at=datetime(2025, 3, 1),
+          subject="office")
+gw.ingest("The office moved to Pretoria.", title="hr-update", subject="office")
+
+hits = gw.retrieve("where is the office", recency="prefer", latest=True)
+print(hits[0].at, hits[0][1])          # 2026-... The office moved to Pretoria.
+```
+
+- **`at=`** on `ingest()`, `ingest_code()` and `ChatMemory.add_turn()` takes a datetime,
+  epoch, ISO string or timedelta (that long ago), and defaults to now. If a file comes
+  in through `ingest_repo()` it'll be stamped with its mtime.
+- **`recency="prefer"`** (a 30-day half-life) or a half-life in seconds will scale each
+  hit's relevance by an exponential age decay. It's multiplicative, so the decay can
+  only ever take `recency_weight` (default 0.5) off an old chunk - a fresh but
+  irrelevant chunk won't climb past a relevant one.
+- **`latest=True`** will keep only the newest of chunks that say the same thing: the
+  same `subject=` key, an older ingest of the same title, or wording whose content-term
+  overlap reaches `dup_threshold` (default 0.6, `None` switches that test off).
+- **`as_of=`** will hide anything recorded after that moment and measure age from
+  there, so you can ask what the index knew "then".
+
+Hits are still `(id, text, score)` tuples, they just pick up `.at` (an aware UTC
+datetime) and `.ts` (epoch). `ChatMemory.context()` will label every recalled turn
+with its local time, `[2026-10-17 14:02] Q: ...`, unless you pass
+`timestamps=False`. With every option off, ordering is byte-for-byte what it was
+before, and `save()`/`load()` will carry the timestamps along with the index...
+
 ## Verified ranking (for code retrieval)
 
 `Groundwire(verified_scorer=...)` scores each source once at ingest — canonical
@@ -210,7 +245,7 @@ app (`macos/`).
 ## Development
 
 ```bash
-python -m unittest discover tests      # 73 tests, network-free, seconds
+python -m unittest discover tests      # 100 tests, network-free, seconds
 ```
 
 Every fix ships with a deterministic regression test. See [CLAUDE.md](CLAUDE.md)
@@ -223,6 +258,8 @@ groundwire/
   pipeline.py        # Groundwire: ingest/chunk/retrieve/ask, _stitch, verified ranking
   memory_systems.py  # backends + fold() tokenizer: bm25, sqlite_fts, dense, hybrid, iterative
   rerank.py          # DenseReranker: reorder a lexical pool by dense cosine, cached, off-GPU
+  temporal.py        # timestamps, recency decay, latest-wins supersession, as_of
+  chat.py            # ChatMemory: retrieved, time-labelled conversational memory
   encoders.py        # stdlib HTTP embedding clients (Ollama / OpenAI-compatible)
   answer.py          # readers: regex_extract (GPU-free), qwen, api
   mapreduce.py       # answer-reduce read loop + map-reduce summarizer
