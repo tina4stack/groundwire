@@ -29,6 +29,9 @@ from __future__ import annotations
 import re
 
 from .memory_systems import make_backend
+from .temporal import (DEFAULT_DUP_THRESHOLD, DEFAULT_WEIGHT, Hit,
+                       apply_recency, half_life_of, supersede, to_datetime,
+                       to_epoch)
 from .harness import chunk_by_sentences
 
 # Sentence boundary = end punctuation FOLLOWED BY whitespace/EOL, or a newline. The old
@@ -131,6 +134,13 @@ class Groundwire:
         self.sources = {}       # chunk_id -> document title
         self.repos = set()      # labels registered by ingest_repo()
         self._next = 0
+        # temporal (groundwire/temporal.py): when each chunk was recorded, an
+        # optional caller-supplied subject key, and every ingest time per document
+        # title (so a re-ingested doc supersedes its older version). Recorded
+        # always, used only when retrieve() is asked for recency/latest/as_of.
+        self.times = {}         # chunk_id -> epoch seconds
+        self.subjects = {}      # chunk_id -> subject key
+        self.title_versions = {}  # document title -> [epoch of each ingest]
         # verified ranking: score each SOURCE once at ingest (offline, via the injected
         # scorer -- keeps groundwire framework-agnostic and zero-dep), read the cached score at
         # query time to sink code that doesn't RUN below code that does. Off unless a scorer
@@ -154,35 +164,59 @@ class Groundwire:
         """Cached verified score for a chunk's source; neutral-high (2) if unscored."""
         return self.verified.get(source, 2)
 
-    def ingest(self, docs, title=None):
+    def _stamp(self, cid, ts, subject):
+        self.times[cid] = ts
+        if subject is not None:
+            self.subjects[cid] = subject
+
+    def _record_version(self, title, ts):
+        if title:
+            vs = self.title_versions.setdefault(title, [])
+            if ts not in vs:
+                vs.append(ts)
+
+    def ingest(self, docs, title=None, at=None, subject=None):
         """Index documents. Accepts a string, a list of strings, or a list of
-        (title, text) pairs; `title=` labels a single string. Titles become the
-        source shown to the reader and returned by source_of(). Returns self."""
+        (title, text) pairs -- or (title, text, at) triples; `title=` labels a
+        single string. Titles become the source shown to the reader and returned
+        by source_of(). `at` is when the text was recorded (datetime / epoch /
+        ISO string; default now) and `subject` an optional fact key -- both feed
+        retrieve(recency=..., latest=...). Returns self."""
         if isinstance(docs, str):
             docs = [(title, docs)]
+        default_ts = to_epoch(at)
         batch = []
         for doc in docs:
-            doc_title, text = doc if isinstance(doc, tuple) else (None, doc)
+            if isinstance(doc, tuple):
+                doc_title, text = doc[0], doc[1]
+                ts = to_epoch(doc[2]) if len(doc) > 2 else default_ts
+            else:
+                doc_title, text, ts = None, doc, default_ts
             self._record_verified(doc_title, text)
+            self._record_version(doc_title, ts)
             for _, chunk in chunk_text(text, self.max_words, self.overlap):
                 batch.append((self._next, chunk))
                 if doc_title:
                     self.sources[self._next] = doc_title
+                self._stamp(self._next, ts, subject)
                 self._next += 1
         if batch:
             self.memory.ingest(batch)
         return self
 
-    def ingest_code(self, text, title=None, max_lines=60):
+    def ingest_code(self, text, title=None, max_lines=60, at=None, subject=None):
         """Index source code, chunked on def/class boundaries (not sentences).
         `title` should be the file path -- it is indexed inside each chunk and
-        becomes the citation source."""
+        becomes the citation source. `at`/`subject` as for ingest()."""
         self._record_verified(title, text)
+        ts = to_epoch(at)
+        self._record_version(title, ts)
         batch = []
         for _, chunk in chunk_code(text, path=title or "", max_lines=max_lines):
             batch.append((self._next, chunk))
             if title:
                 self.sources[self._next] = title
+            self._stamp(self._next, ts, subject)
             self._next += 1
         if batch:
             self.memory.ingest(batch)
@@ -232,12 +266,16 @@ class Groundwire:
                     continue
                 path = _os.path.join(dirpath, fn)
                 title = f"{label}/{_os.path.relpath(path, root)}"
+                try:
+                    mtime = _os.path.getmtime(path)  # a file is "as of" its mtime
+                except OSError:
+                    mtime = None
                 if ext in EXTRACT_EXTS:
                     # binary doc (Word/PDF): pull the text layer, then chunk it
                     # as prose. Skip silently if extraction yields nothing.
                     text = extract_text(path)
                     if text:
-                        self.ingest(text, title=title)
+                        self.ingest(text, title=title, at=mtime)
                     continue
                 try:
                     text = open(path, encoding="utf-8", errors="ignore").read()
@@ -246,14 +284,31 @@ class Groundwire:
                 if ext in self.CODE_EXTS or ext in self.CONFIG_EXTS or special:
                     # configs go through the line-window chunker too --
                     # sentence chunking shreds YAML/Dockerfiles
-                    self.ingest_code(text, title=title)
+                    self.ingest_code(text, title=title, at=mtime)
                 else:
-                    self.ingest(text, title=title)
+                    self.ingest(text, title=title, at=mtime)
         return self
 
     def source_of(self, chunk_id):
         """Title of the document a chunk came from (None if untitled)."""
         return self.sources.get(chunk_id)
+
+    def time_of(self, chunk_id):
+        """When a chunk was recorded, as an aware UTC datetime (None if unknown)."""
+        return to_datetime(self.times.get(chunk_id))
+
+    def _temporal(self, pool, half_life, weight, latest, dup_threshold, as_of):
+        """The opt-in time passes over a candidate pool (see retrieve())."""
+        if as_of is not None:
+            pool = [h for h in pool
+                    if self.times.get(h[0]) is None or self.times[h[0]] <= as_of]
+        if half_life:
+            pool = apply_recency(pool, self.times, half_life, weight, now=as_of)
+        if latest:
+            pool = supersede(pool, self.times, self.subjects, self.sources,
+                             self.title_versions, threshold=dup_threshold,
+                             as_of=as_of)
+        return pool
 
     @staticmethod
     def _is_testlike(src):
@@ -267,7 +322,9 @@ class Groundwire:
         return base in ("llms.txt", "claude.md", "readme.md", "agents.md") \
             or "/docs/" in (src or "").lower()
 
-    def retrieve(self, question, k=None, scope=None):
+    def retrieve(self, question, k=None, scope=None, recency=None,
+                 recency_weight=DEFAULT_WEIGHT, latest=False,
+                 dup_threshold=DEFAULT_DUP_THRESHOLD, as_of=None):
         """Query the memory with two stable reorderings of a 3x candidate
         pool:
         - repo scoping: a question naming an ingested repo is answered from
@@ -279,11 +336,30 @@ class Groundwire:
           chunks (a test mentions getToken dozens of times, the definition
           once), but the definition is the answer. Tests stay in the pool
           as usage examples -- below the source. Skipped when the question
-          is itself about tests."""
+          is itself about tests.
+
+        Time options (all off by default -- off, ordering is unchanged):
+        - recency: None | "prefer" (30-day half-life) | half-life in seconds
+          (or a timedelta). Scales relevance by an exponential age decay, at
+          most discounting a chunk by `recency_weight` (0..1, default 0.5).
+        - latest: among chunks that say the same thing (same `subject`, an
+          older ingest of the same title, or wording with content-term Jaccard
+          >= `dup_threshold`; None disables the wording test) keep the newest.
+        - as_of: a datetime/epoch -- ignore chunks recorded after it, and
+          measure recency from it. "What did we know then?"
+        Every hit carries `.at` (aware UTC datetime) / `.ts` (epoch)."""
         k = k or self.k
-        pool = self.memory.query(question, k=k * 3)
+        half_life = half_life_of(recency)
+        as_of_ts = None if as_of is None else to_epoch(as_of)
+        timed = bool(half_life or latest or as_of_ts is not None)
+        # supersession/as_of drop hits and recency pulls newer ones up from
+        # lower ranks, so a time-aware query looks at a wider pool
+        pool = self.memory.query(question, k=k * (6 if timed else 3))
         if self.reranker and pool:
             pool = self.reranker(question, pool)
+        if timed:
+            pool = self._temporal(pool, half_life, recency_weight, latest,
+                                  dup_threshold, as_of_ts)
         scoped = [r for r in self.repos if r.lower() in question.lower()] \
             or ([scope] if scope in self.repos else [])
         if scoped:
@@ -303,6 +379,9 @@ class Groundwire:
                 wide = self.memory.query(question, k=max(k * 12, 60))
                 if self.reranker and wide:
                     wide = self.reranker(question, wide)
+                if timed:
+                    wide = self._temporal(wide, half_life, recency_weight,
+                                          latest, dup_threshold, as_of_ts)
                 seen = {h[0] for h in mine}
                 mine += [h for h in wide if in_scope(h) and h[0] not in seen]
                 rest = [h for h in pool if not in_scope(h)]
@@ -404,7 +483,7 @@ class Groundwire:
                                      if p.startswith("# file:") and "\n" in p
                                      else p for p in parts[1:]]
                 text = "\n".join(parts)
-            out.append((span[0], text, score))
+            out.append(Hit(span[0], text, score, self.times.get(span[0])))
         return out
 
     def ask(self, question, k=None, reader_budget_chars=None):
@@ -450,7 +529,10 @@ class Groundwire:
             raise NotImplementedError(
                 f"{self.memory.name} backend has no save()")
         payload.update(sources={str(k): v for k, v in self.sources.items()},
-                       repos=list(self.repos), next=self._next)
+                       repos=list(self.repos), next=self._next,
+                       times={str(k): v for k, v in self.times.items()},
+                       subjects={str(k): v for k, v in self.subjects.items()},
+                       title_versions=self.title_versions)
         with open(path, "wb") as f:
             pickle.dump(payload, f)
         return self
@@ -466,4 +548,8 @@ class Groundwire:
         self.sources = {int(k): v for k, v in payload["sources"].items()}
         self.repos = set(payload["repos"])
         self._next = payload["next"]
+        # snapshots from before timestamps load untimed (recency treats them as old)
+        self.times = {int(k): v for k, v in payload.get("times", {}).items()}
+        self.subjects = {int(k): v for k, v in payload.get("subjects", {}).items()}
+        self.title_versions = payload.get("title_versions", {})
         return self
