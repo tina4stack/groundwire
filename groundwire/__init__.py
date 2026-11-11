@@ -14,5 +14,5 @@ Distributed on PyPI as `tina4-groundwire`.
 from .pipeline import Groundwire, chunk_text, chunk_code
 from .chat import ChatMemory
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["Groundwire", "ChatMemory", "chunk_text", "chunk_code", "__version__"]
